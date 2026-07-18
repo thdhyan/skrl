@@ -1,0 +1,633 @@
+#usda 1.0
+(
+    customLayerData = {
+        dictionary cameraSettings = {
+            dictionary Front = {
+                double3 position = (5, 0, 0)
+                double radius = 5
+            }
+            dictionary Perspective = {
+                double3 position = (-2.1602497145629473, 13.132934716523453, 3.4928516386498307)
+                double3 target = (-0.6482766842404057, -15.442459871975542, -2.8215663213435738)
+            }
+            dictionary Right = {
+                double3 position = (0, -5, 0)
+                double radius = 5
+            }
+            dictionary Top = {
+                double3 position = (0, 0, 5)
+                double radius = 5
+            }
+            string boundCamera = "/World/nova_carter/chassis_link/sensors/left_hawk/right/camera_right"
+        }
+        dictionary metricsAssembler = {
+            dictionary "/World/sm_whitecorrugatedbox_b04_white_01_physics" = {
+            }
+            dictionary "/World/sm_whitecorrugatedbox_b20_brown_01_physics" = {
+            }
+            int version = 1
+        }
+        dictionary omni_layer = {
+            string authoring_layer = "./New_warehouse.usda"
+            dictionary locked = {
+            }
+            dictionary muteness = {
+            }
+        }
+        dictionary renderSettings = {
+        }
+    }
+    defaultPrim = "World"
+    endTimeCode = 1000000
+    metersPerUnit = 1
+    startTimeCode = 0
+    timeCodesPerSecond = 60
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def "warehouse_with_forklifts" (
+        prepend payload = @./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Environments/Simple_Warehouse/warehouse_with_forklifts.usd@
+    )
+    {
+        quatf xformOp:orient = (1, 0, 0, 0)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+
+    def "nova_carter" (
+        prepend payload = @./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/Robots/NVIDIA/NovaCarter/nova_carter.usd@
+    )
+    {
+        quatd xformOp:orient = (0.7372773368101241, 0, 0, -0.6755902076156601)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (-3.303108921166763, 2.998141037523638, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+        over "chassis_link"
+        {
+            over "sensors"
+            {
+                over "left_hawk"
+                {
+                    over "left"
+                    {
+                        over "camera_left"
+                        {
+                            custom string isaac:nameOverride (
+                                displayName = "Name Override"
+                                doc = "Name override for prim lookup in base name search"
+                            )
+                        }
+                    }
+
+                    over "right"
+                    {
+                        over "camera_right"
+                        {
+                            custom string isaac:nameOverride (
+                                displayName = "Name Override"
+                                doc = "Name override for prim lookup in base name search"
+                            )
+                        }
+                    }
+                }
+
+                over "right_owl"
+                {
+                    over "camera"
+                    {
+                        custom string isaac:nameOverride (
+                            displayName = "Name Override"
+                            doc = "Name override for prim lookup in base name search"
+                        )
+                        bool omni:kit:cameraLock = 1
+                    }
+                }
+
+                over "XT_32"
+                {
+                    over "PandarXT_32_10hz"
+                    {
+                        custom string isaac:nameOverride (
+                            displayName = "Name Override"
+                            doc = "Name override for prim lookup in base name search"
+                        )
+                    }
+                }
+
+                over "right_hawk"
+                {
+                    over "left"
+                    {
+                        over "camera_left"
+                        {
+                            custom string isaac:nameOverride (
+                                displayName = "Name Override"
+                                doc = "Name override for prim lookup in base name search"
+                            )
+                        }
+                    }
+
+                    over "right"
+                    {
+                        over "camera_right"
+                        {
+                            custom string isaac:nameOverride (
+                                displayName = "Name Override"
+                                doc = "Name override for prim lookup in base name search"
+                            )
+                        }
+                    }
+                }
+
+                over "back_owl"
+                {
+                    over "camera"
+                    {
+                        custom string isaac:nameOverride (
+                            displayName = "Name Override"
+                            doc = "Name override for prim lookup in base name search"
+                        )
+                    }
+                }
+
+                over "back_hawk"
+                {
+                    over "right"
+                    {
+                        over "camera_right"
+                        {
+                            custom string isaac:nameOverride (
+                                displayName = "Name Override"
+                                doc = "Name override for prim lookup in base name search"
+                            )
+                        }
+                    }
+
+                    over "left"
+                    {
+                        over "camera_left"
+                        {
+                            custom string isaac:nameOverride (
+                                displayName = "Name Override"
+                                doc = "Name override for prim lookup in base name search"
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        over "caster_frame_base"
+        {
+        }
+
+        over "caster_swivel_left"
+        {
+        }
+
+        over "caster_wheel_left"
+        {
+        }
+
+        over "caster_swivel_right"
+        {
+        }
+
+        over "caster_wheel_right"
+        {
+        }
+
+        over "wheel_left"
+        {
+        }
+
+        over "wheel_right"
+        {
+        }
+
+        over "joint_caster_base"
+        {
+            float state:angular:physics:position = 0
+            float state:angular:physics:velocity = 0
+        }
+
+        over "joint_wheel_left"
+        {
+            float state:angular:physics:position = 0
+            float state:angular:physics:velocity = 0
+        }
+
+        over "joint_wheel_right"
+        {
+            float state:angular:physics:position = 0
+            float state:angular:physics:velocity = 0
+        }
+
+        over "joint_swing_left"
+        {
+            float state:angular:physics:position = 0
+            float state:angular:physics:velocity = 0
+        }
+
+        over "joint_swing_right"
+        {
+            float state:angular:physics:position = 0
+            float state:angular:physics:velocity = 0
+        }
+
+        over "joint_caster_left"
+        {
+            float state:angular:physics:position = 0
+            float state:angular:physics:velocity = 0
+        }
+
+        over "joint_caster_right"
+        {
+            float state:angular:physics:position = 0
+            float state:angular:physics:velocity = 0
+        }
+    }
+
+    def "sm_whitecorrugatedbox_b04_white_01_physics" (
+        prepend references = @./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/IsaacLab/Mimic/pick_place_task/pick_place_assets/PackingTable/props/sm_whitecorrugatedbox_b/sm_whitecorrugatedbox_b04_white_01_physics.usd@
+    )
+    {
+        float3 xformOp:rotateXYZ = (0, 0, 0)
+        float3 xformOp:scale = (3.8, 3.8, 3.8)
+        double3 xformOp:scale:unitsResolve = (0.01, 0.01, 0.01)
+        double3 xformOp:translate = (-0.7312310938812336, 2.971960710667354, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale", "xformOp:scale:unitsResolve"]
+    }
+
+    def "sm_whitecorrugatedbox_b20_brown_01_physics" (
+        prepend references = @./omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.1/Isaac/IsaacLab/Mimic/g1_squatting_task/PackingTable/props/sm_whitecorrugatedbox_b/sm_whitecorrugatedbox_b20_brown_01_physics.usd@
+    )
+    {
+        float3 xformOp:rotateXYZ = (0, 0, 0)
+        float3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:scale:unitsResolve = (0.01, 0.01, 0.01)
+        double3 xformOp:translate = (-0.6075386019061839, 4.254641978387462, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale", "xformOp:scale:unitsResolve"]
+
+        over "Geometry"
+        {
+            over "sm_whitecorrugatedbox_b20_body_01"
+            {
+                float3 xformOp:rotateXYZ = (0, 0, 0)
+                float3 xformOp:scale = (1, 1, 1)
+                double3 xformOp:translate = (0, -3.979039320256561e-12, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateXYZ", "xformOp:scale"]
+            }
+
+            over "sm_whitecorrugatedbox_b20_decal_01" (
+                active = true
+            )
+            {
+            }
+
+            over "sm_whitecorrugatedbox_b20_scotch_01" (
+                active = true
+            )
+            {
+            }
+        }
+    }
+
+    def Scope "GlobalCameras"
+    {
+        def Camera "Camera_01"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 6.3
+            float focusDistance = 400
+            float horizontalAperture = 16.1
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            token projection = "perspective"
+            float verticalAperture = 15.2908
+            quatd xformOp:orient = (0.8069441238080123, 0.17224622430768097, 0.11793530052820309, 0.5525067276991202)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-6.836808776947055e-63, -6.158049892052419e-47, 6.293528222061542)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_02"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            token visibility = "inherited"
+            quatd xformOp:orient = (0.5669615399342623, 0.5301248225057987, 0.430614238787311, 0.460536276695105)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (8.82564826397458, 0.09289267096950114, 2.4420088435976437)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_03"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.704303556065351, 0.7043035560653512, 0.06290072268027551, 0.06290072268027551)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-3.020154340686469e-14, -7.7088410725165835, 1.8747598552183737)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_04"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            quatd xformOp:orient = (0.23129104683582888, 0.23129104683582882, 0.6682098859292538, 0.6682098859292539)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (8.505592981472267, 13.201232202477605, 1.1147722982111155)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_05"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 12.900001
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (-0.02667115078518904, -0.04503122690013522, -0.5143173284871935, -0.8560014742612647)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (1.0000000149011612, 17.52115450993228, 8.800000131130219)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_06"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.20889604802332315, 0.1777955066886335, 0.5933245592256724, 0.7567807914721615)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (7.814584173978641, 17.21988638527398, 3.7876998095369223)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_07"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (-0.051305060741215616, -0.05499331504809245, 0.729130439500912, 0.6802296143476615)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-3.826825558078829, 17.5040473360468, 1.5910900266608843)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_08"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.2735004669191221, 0.1774478879353983, -0.5494749045551348, -0.7692769793295613)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-8.712668684763115, 17.079855130233266, 3.732399796188061)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_09"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.8010178557467309, 0.5811483249584386, -0.0709174174253617, -0.12493093723584882)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-5.835975741622954, -11.372994167528878, 3.9130952834451787)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_10"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.7048692369527216, 0.634381144326554, -0.21230512173493982, -0.23589501437235225)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-6.825078948719223, -2.117692664843993, 2.005837792934005)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_11"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.7586092674284326, 0.5204136335987823, 0.1904466512647235, 0.3426539104669056)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (7.231760414471116, -6.273022494558977, 5.3506500640146735)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_12"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.6943708507792862, 0.5002289375099104, -0.302384831903411, -0.41974223649818987)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-7.439257049871019, 0.9259529066544725, 2.6076555228773413)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_13"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.20218727068385625, 0.2049202131349969, 0.6817040979856303, 0.6726124713471486)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (9.032078100685416, 16.610781990454527, 1.2813019457386663)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_14"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 12.6
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.8042285866857083, 0.49888415123941643, 0.21704409804660071, 0.23921296683660948)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (8.273690909329293, -11.267494130974216, 8.422798523397471)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_15"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.6982501589924215, 0.6832099245108431, 0.14216553937134868, 0.1595615051702624)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (4.988277613407557, -8.612090168459355, 2.0349272733499792)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_16"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.6272667320793893, 0.5957890335202748, -0.3519541389446417, -0.3573515893950333)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-7.900134169273869, 0.4507514126917982, 0.9814471881774456)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_17"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.3598604345001234, 0.19662126747189626, -0.5180348475422316, -0.7506533431558302)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-8.816952104454018, 9.904105568612382, 4.480569821545123)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_18"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 9.3
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.6158053225709592, 0.49255907807276766, -0.38377133720876694, -0.4805090218074755)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-9.300000138580799, -6.800000101327896, 6.577291128778556)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_19"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 18.147562
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.011109014959978621, 0.01096085827933645, 0.7022585625138978, 0.7117509120108757)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (-4.080994099436839e-14, 11.755228500225666, 0.5286123460451274)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Camera "Camera_20"
+        {
+            float2 clippingRange = (0.01, 10000000)
+            float focalLength = 13.6
+            float focusDistance = 400
+            custom uniform vector3d omni:kit:centerOfInterest = (0, 0, -400)
+            quatd xformOp:orient = (0.5534126532086286, 0.3144366106853898, 0.3895183012563034, 0.6656872735118755)
+            double3 xformOp:scale = (1, 1, 1)
+            double3 xformOp:translate = (9.400000140070915, 4.700000070035458, 7.800000116229057)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+    }
+}
+
+def Xform "Environment"
+{
+    quatd xformOp:orient = (1, 0, 0, 0)
+    double3 xformOp:scale = (1, 1, 1)
+    double3 xformOp:translate = (0, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+    def DistantLight "defaultLight" (
+        prepend apiSchemas = ["ShapingAPI"]
+    )
+    {
+        float inputs:angle = 1
+        float inputs:intensity = 3000
+        float inputs:shaping:cone:angle = 180
+        float inputs:shaping:cone:softness
+        float inputs:shaping:focus
+        color3f inputs:shaping:focusTint
+        asset inputs:shaping:ies:file
+        quatd xformOp:orient = (0.6532814824381883, 0.2705980500730985, 0.27059805007309845, 0.6532814824381882)
+        double3 xformOp:scale = (1, 1, 1)
+        double3 xformOp:translate = (0, 0, 0)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+    }
+}
+
+def "Render" (
+    hide_in_stage_window = true
+    no_delete = true
+)
+{
+    def "OmniverseKit"
+    {
+        def "HydraTextures" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            def RenderProduct "omni_kit_widget_viewport_ViewportTexture_0" (
+                prepend apiSchemas = ["OmniRtxSettingsCommonAdvancedAPI_1", "OmniRtxSettingsRtAdvancedAPI_1", "OmniRtxSettingsPtAdvancedAPI_1", "OmniRtxPostColorGradingAPI_1", "OmniRtxPostChromaticAberrationAPI_1", "OmniRtxPostBloomPhysicalAPI_1", "OmniRtxPostMatteObjectAPI_1", "OmniRtxPostCompositingAPI_1", "OmniRtxPostDofAPI_1", "OmniRtxPostMotionBlurAPI_1", "OmniRtxPostTvNoiseAPI_1", "OmniRtxPostTonemapIrayReinhardAPI_1", "OmniRtxPostDebugSettingsAPI_1", "OmniRtxDebugSettingsAPI_1"]
+                hide_in_stage_window = true
+                no_delete = true
+            )
+            {
+                rel camera = </World/nova_carter/chassis_link/sensors/left_hawk/right/camera_right>
+                token omni:rtx:background:source:texture:textureMode = "repeatMirrored"
+                token omni:rtx:background:source:type = "domeLight"
+                bool omni:rtx:material:db:nonVisualMaterialCSV:enabled = 0
+                token omni:rtx:post:dlss:execMode = "performance"
+                bool omni:rtx:post:registeredCompositing:invertColorCorrection = 1
+                bool omni:rtx:post:registeredCompositing:invertToneMap = 1
+                bool omni:rtx:pt:lightcache:cached:dontResolveConflicts = 1
+                int omni:rtx:pt:maxSamplesPerLaunch = 2073600
+                int omni:rtx:pt:mgpu:maxPixelsPerRegionExponent = 12
+                float omni:rtx:realtime:mgpu:masterDeviceLoadBalancingWeight = 0
+                int omni:rtx:realtime:mgpu:tileCount = 2
+                color3f omni:rtx:rt:ambientLight:color = (0.1, 0.1, 0.1)
+                bool omni:rtx:rt:demoire = 0
+                bool omni:rtx:rt:ecoMode:enabled
+                bool omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts = 1
+                uint omni:rtx:viewTile:limit = 4294967295
+                rel orderedVars = </Render/Vars/LdrColor>
+                custom bool overrideClipRange = 0
+                uniform int2 resolution = (1280, 720)
+            }
+        }
+    }
+
+    def RenderSettings "OmniverseGlobalRenderSettings" (
+        prepend apiSchemas = ["OmniRtxSettingsGlobalRtAdvancedAPI_1", "OmniRtxSettingsGlobalPtAdvancedAPI_1"]
+        no_delete = true
+    )
+    {
+        rel products = </Render/OmniverseKit/HydraTextures/omni_kit_widget_viewport_ViewportTexture_0>
+    }
+
+    def "Vars"
+    {
+        def RenderVar "LdrColor" (
+            hide_in_stage_window = true
+            no_delete = true
+        )
+        {
+            uniform string sourceName = "LdrColor"
+        }
+    }
+}
+
