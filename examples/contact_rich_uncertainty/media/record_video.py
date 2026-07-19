@@ -14,6 +14,7 @@ from skrl.envs.wrappers.torch import wrap_env
 from skrl.envs.wrappers.torch.pomdp_wrapper import PomdpWrapper
 from skrl.memories.torch import RandomMemory
 from skrl.resources.preprocessors.torch import RunningStandardScaler
+from skrl.utils import set_seed
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--checkpoint", required=True)
@@ -21,12 +22,26 @@ parser.add_argument("--baseline", action="store_true")
 parser.add_argument("--out", required=True)
 parser.add_argument("--seed", type=int, default=123)
 parser.add_argument("--max-steps", type=int, default=500)
+parser.add_argument(
+    "--env-max-episode-steps",
+    type=int,
+    default=500,
+    help="Override CartPole-v1's built-in 500-step TimeLimit, e.g. 2000, to show sustained "
+    "balance beyond the standard cutoff (proves stability, not just hitting the default cap).",
+)
 parser.add_argument("--masscart", type=float, default=M.MASSCART)
 parser.add_argument("--masspole", type=float, default=M.MASSPOLE)
 args = parser.parse_args()
 
+# Seed torch/numpy/random globally -- without this, the particle filter's process
+# noise and resampling (torch.randn draws) are NOT reproducible across runs even
+# with the same --seed, since --seed only seeds the env's own RNG. This was the
+# cause of the light-pole rollout reward=10 anomaly: an unseeded torch RNG made
+# every invocation a different noise realization.
+set_seed(args.seed)
+
 device = "cpu"
-base_env = gymnasium.make("CartPole-v1", render_mode="rgb_array")
+base_env = gymnasium.make("CartPole-v1", render_mode="rgb_array", max_episode_steps=args.env_max_episode_steps)
 M.apply_cartpole_physics(base_env, args.masscart, args.masspole)
 env = PomdpWrapper(base_env, hidden_obs_indices=M.HIDDEN, obs_noise_std=0.02, seed=args.seed)
 if not args.baseline:
