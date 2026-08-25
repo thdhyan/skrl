@@ -128,6 +128,26 @@ Under Partial Observability*, RSS 2020.
 
 ## 4. Transfer work items (ordered, independently verifiable)
 
+### T-0 · ✅ DONE — OmniReset-style diverse resets
+Ported from the source repo's `reset_cube_and_goal_omnireset` +
+`BeliefOmniResetEventCfg`:
+- `skrl/belief/torch/omnireset.py` — pure-torch mixture sampler
+  (`OmniResetCfg` + `sample_omnireset_starts`: reaching 0.35 / corridor
+  0.30 / near-goal ring, alpha∈[0.15,0.65], lateral tangent offset,
+  workspace clamp) — exact geometry of the source implementation.
+- `skrl/envs/wrappers/torch/omnireset_wrapper.py` — `OmniResetWrapper`
+  (intercepts every Python-level reset; exposes mode ids/fractions in info,
+  cumulative counts property).
+- `skrl/belief/torch/isaaclab_omnireset.py` — `reset_object_pose_omnireset`
+  EventTerm adapter (lazy Isaac Lab import; writes root pose/velocity like
+  the source event; stores `env._skrl_omnireset_mode_ids`; goal untouched).
+- Tests: `tests/belief/test_omnireset.py` (ratio proportions, per-mode
+  geometry, workspace clamping, wrapper placement/info).
+
+Remaining follow-up: wire `reset_object_pose_omnireset` into an Isaac Lab
+task's `EventTerm` and pair it with the belief prior event (one-liner in the
+task cfg — see HANDOFF_ISAACLAB_BELIEF.md §4).
+
 ### T-1 · Port the planar filter as `skrl/belief/torch/planar_batched.py`
 Copy `mdp/belief.py` from the pushing repo; strip Isaac Lab imports behind
 callables so the math is testable without Isaac Lab:

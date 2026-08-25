@@ -174,9 +174,22 @@ Steps inside YOUR task package (no skrl agent changes needed):
 1. Copy `belief.py` next to your task's `mdp/` (it imports only
    `isaaclab.assets/managers/sensors`; retarget the three `SceneEntityCfg`s +
    workspace clamps to your scene).
-2. Add a reset event (mode=`"reset"`) calling `reset_planar_particle_belief`
-   (bimodal task-knowledge prior) or `reset_planar_particle_belief_around_cube`
-   (local+secondary+uniform mixture — recommended for training diversity).
+2. OmniReset-style starts + belief priors at reset:
+   - Object placement: use the shared mixture sampler via
+     `skrl.belief.torch.isaaclab_omnireset.reset_object_pose_omnireset`
+     as an `EventTerm(mode="reset", params={"object_cfg": SceneEntityCfg(...),
+     "cfg": OmniResetCfg(goal_xy=...)})`. This reproduces the source repo's
+     reaching/corridor/near-goal reset mixture (0.35/0.30/0.35) and stores
+     mode ids on `env._skrl_omnireset_mode_ids` (log with
+     `omnireset_mode_fractions(env)`).
+   - Belief prior: add a second reset event calling
+     `reset_planar_particle_belief` (bimodal task-knowledge prior) or
+     `reset_planar_particle_belief_around_cube` (local+secondary+uniform
+     mixture — recommended; pairs with omni-reset placement).
+   - Do NOT try to do this with `OmniResetWrapper` here: Isaac Lab vectorized
+     envs auto-reset internally, so wrapper-level resets fire only once. The
+     wrapper (`skrl/envs/wrappers/torch/omnireset_wrapper.py`) is for
+     single-env/gymnasium/MuJoCo-style tasks where Python sees every reset.
 3. Add the observation term:
    ```python
    compressed_belief = ObsTerm(func=my_mdp.compressed_planar_belief, params={...})
