@@ -297,7 +297,212 @@ scatter colored by weights + GMM ellipses from `GMMState`.
 
 ---
 
-## 8. Verification checklist (definition of "it works")
+## 8. Running inside Isaac Lab's registered-env YAML flow (`isaaclab.sh train`)
+
+Isaac Lab's default skrl workflow is: task registered via `gym.register(...,
+skrl_cfg_entry_point="...:skrl_ppo_cfg.yaml")` → `./isaaclab.sh train
+--rl_library skrl --task <TASK>` → `SkrlVecEnvWrapper(env)` →
+`skrl.utils.runner.torch.Runner(env, agent_cfg_from_yaml)` → `runner.run()`.
+This flow works with the belief system **unchanged**, because of one verified
+fact about the bridge:
+
+> `IsaacLabWrapper` (in this fork, `skrl/envs/wrappers/torch/isaaclab_envs.py`)
+> reads obs **groups by name**: `observations["policy"]` becomes the agent's
+> observation, and an optional `"critic"` group becomes the agent's privileged
+> `states` (`state_space = single_observation_space["critic"]`). So the
+> asymmetric belief setup maps 1:1 onto Isaac Lab's group mechanism.
+
+That also settles WHERE the filter lives in this flow: the YAML `Runner`
+hard-imports stock agents only (PPO/DQN/SAC/... — see
+`skrl/utils/runner/torch/runner.py`), so Pattern C (agent-owned filter) does
+NOT fit here. Use **Pattern B**: filter inside the env, belief vector as a
+"policy"-group obs term. Stock YAML PPO then trains on it as-is.
+
+### 8.1 Observation groups (the part you asked about)
+
+In a manager-based env cfg, group names = attribute names on your
+`ObservationsCfg`. Reuse the proven groups from the source repo
+(`cube_push_env_cfg.py`, `BeliefAsymmetricObservationsCfg`):
+
+```python
+@configclass
+class BeliefObservationsCfg:
+    @configclass
+    class PolicyCfg(ObsGroup):                    # -> observations["policy"]
+        actions         = ObsTerm(func=mdp.last_action)
+        noisy_joint_pos = ObsTerm(func=mdp.noisy_joint_pos, params={"std": 0.0174533})
+        joint_vel       = ObsTerm(func=mdp.joint_vel_rel)
+        ee_position     = ObsTerm(func=mdp.ee_frame_pos)
+        compressed_belief = ObsTerm(func=mdp.compressed_planar_belief, params={...})   # 24-dim b̃
+        ee_to_belief    = ObsTerm(func=mdp.ee_to_belief_mean, params={"num_particles": 256})
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+    policy: PolicyCfg = PolicyCfg()               # NO ground-truth object pose here
+
+    @configclass
+    class CriticCfg(ObsGroup):                    # -> observations["critic"] (privileged)
+        joint_pos       = ObsTerm(func=mdp.joint_pos_rel)
+        red_cube_pose   = ObsTerm(func=mdp.red_cube_pose)      # GT allowed: critic-only
+        red_cube_vel    = ObsTerm(func=mdp.red_cube_velocity)
+        goal_position   = ObsTerm(func=mdp.goal_position)
+        cube_to_goal    = ObsTerm(func=mdp.cube_to_goal)
+        ee_position     = ObsTerm(func=mdp.ee_frame_pos)
+        ...
+    critic: CriticCfg = CriticCfg()
+```
+
+Rules that make it work end-to-end:
+
+1. Group names MUST be exactly `policy` and `critic` (the wrapper looks those up).
+2. Actor terms never read ground truth; all GT terms go in `critic`.
+3. `concatenate_terms = True` per group; each group flattens to one Box space.
+4. The particle-filter update happens inside the `compressed_planar_belief`
+   term call (once per step, guarded by `common_step_counter`) — no trainer
+   involvement; auto-resets are handled by the omni-reset EventTerm + prior
+   event from §4.
+5. If you only need symmetric training, omit the `critic` group entirely:
+   `state()` returns `None` and every model just uses `OBSERVATIONS`.
+
+### 8.2 Register the task with a skrl entry point
+
+In your task package `__init__.py` (same file that registers `-v0` IDs):
+
+```python
+import os
+agents_dir = os.path.join(os.path.dirname(__file__), "agents")
+
+gym.register(
+    id="Isaac-Belief-Push-Cube-Franka-IK-HighLevel-OmniReset-PPO-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.cube_push_env_cfg:FrankaCubePushBeliefIKHighLevelOmniResetPPOEnvCfg",
+        "skrl_cfg_entry_point": f"{agents_dir}:skrl_belief_ppo_cfg.yaml",   # <- add this
+    },
+)
+```
+
+(Isaac Lab's own registry uses `"skrl_cfg_entry_point": f"{__name__}:skrl_ppo_cfg.yaml"`.)
+
+### 8.3 The YAML (`agents/skrl_belief_ppo_cfg.yaml`)
+
+Same schema as any Isaac Lab skrl yaml; two belief-specific changes: input
+sizes match the belief-augmented policy group, and the value net consumes the
+privileged group via `input: STATES`:
+
+```yaml
+seed: 42
+
+models:
+  separate: False
+  policy:
+    class: GaussianMixin
+    clip_actions: false
+    clip_log_std: true
+    min_log_std: -20.0
+    max_log_std: 2.0
+    initial_log_std: 0.0
+    network:
+      - name: net
+        input: OBSERVATIONS          # flattened "policy" group (belief + proprioception)
+        layers: [256, 128, 64]
+        activations: elu
+    output: ACTIONS
+  value:
+    class: DeterministicMixin
+    clip_actions: false
+    network:
+      - name: net
+        input: STATES                # flattened "critic" group (privileged full state)
+        layers: [256, 128, 64]
+        activations: elu
+    output: ONE
+
+memory:
+  class: RandomMemory
+  memory_size: -1
+
+agent:
+  class: PPO                         # stock agents only in the Runner (by design here)
+  rollouts: 32
+  learning_epochs: 5
+  mini_batches: 4
+  discount_factor: 0.99
+  lambda: 0.95
+  learning_rate: 5.0e-4
+  learning_rate_scheduler: KLAdaptiveLR
+  learning_rate_scheduler_kwargs:
+    kl_threshold: 0.01
+  state_preprocessor: RunningStandardScaler
+  state_preprocessor_kwargs:
+    size: null                       # derive from env
+  grad_norm_clip: 1.0
+  ratio_clip: 0.2
+  value_clip: 0.2
+  clip_predicted_values: true
+  entropy_loss_scale: 0.004
+  value_loss_scale: 2.0
+  time_limit_bootstrap: false
+  experiment:
+    directory: "franka_belief_push_skrl"
+    experiment_name: ""
+    write_interval: auto
+    checkpoint_interval: auto
+
+trainer:
+  class: SequentialTrainer
+  timesteps: 16000                   # max_iterations * rollouts
+  environment_info: log
+```
+
+Hyperparameters mirror the source repo's rsl_rl config (`PPORunnerCfg`) for
+comparability. For the discrete DQN variant swap the models to
+CategoricalMixin over the same `OBSERVATIONS` input and set
+`agent.class: DQN`.
+
+### 8.4 Run / play
+
+```bash
+conda activate env_isaaclab && cd ~/Projects/IsaacLab
+# training (YAML picked up automatically via skrl_cfg_entry_point):
+./isaaclab.sh train --rl_library skrl --task Isaac-Belief-Push-Cube-Franka-IK-HighLevel-OmniReset-PPO-v0 \
+    --headless --num_envs 1024 --max_iterations 500
+# play:
+./isaaclab.sh play  --rl_library skrl --task <TASK>-Play-v0 \
+    --checkpoint logs/skrl/franka_belief_push_skrl/<run>/checkpoints/agent_<N>.pt
+# (the deprecated-but-working script path: scripts/reinforcement_learning/skrl/train.py;
+#  it pins SKRL_VERSION >= 2.1.0 — exactly this branch's base)
+```
+
+Logs → `logs/skrl/<experiment.directory>/<timestamp>_ppo_torch_.../`
+(`params/env.yaml`, `params/agent.yaml`, TensorBoard, checkpoints).
+
+### 8.5 Belief viz inside this flow
+
+The filter lives in the env, so visualize from env state, not the agent:
+during a play loop read `env.unwrapped._rss20_planar_belief` (or the
+portable helpers `belief_posterior_samples_world` /
+`belief_mode_centers_world`) each render tick and feed the ported
+`BeliefCloudUsdVisualizer` (§6). Mode ids from omni-reset land on
+`env.unwrapped._skrl_omnireset_mode_ids` for per-mode success breakdowns.
+
+### 8.6 Flow-specific gotchas
+
+- `Runner` resolves only stock agents — do not try `agent.class: BeliefDQN`
+  without extending `skrl/utils/runner/torch/runner.py` first (unnecessary:
+  belief-in-env makes stock PPO/DQN sufficient).
+- The value net's `STATES` input exists ONLY if the env defines a `critic`
+  group; otherwise set `input: OBSERVATIONS`.
+- `state_preprocessor` normalizes the privileged states; keep it enabled —
+  raw cube pose magnitudes differ wildly from proprioception scales.
+- Isaac Lab auto-resets internally, so `OmniResetWrapper` (§3) must NOT be
+  stacked on registered envs — use the `reset_object_pose_omnireset`
+  EventTerm (§4). Wrapper-level resets fire once at startup only.
+
+---
+
+## 9. Verification checklist (definition of "it works")
 
 - [ ] `tests/belief`, `test_belief_dqn.py` green.
 - [ ] CartPole smoke proof reproduces: belief-PPO beats `--baseline` PPO on
