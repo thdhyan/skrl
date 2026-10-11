@@ -6,6 +6,7 @@ from typing import Any, Callable, Optional
 import torch
 
 from skrl.belief.torch.base import Belief
+from skrl.belief.torch.markers import belief_markers, belief_stats
 
 
 class BeliefAgentMixin:
@@ -26,6 +27,11 @@ class BeliefAgentMixin:
       and tracking entropy.
     - ``self.reset_belief(initial_particles, initial_weights)`` at the
       start of each episode.
+
+    For visualization, ``get_belief_markers()`` returns the particles, weights and
+    GMM clusters (see :func:`skrl.belief.torch.markers.belief_markers`). If the agent
+    config sets ``belief_true_state_fn(infos) -> [state_dim]``, every step also tracks
+    the belief statistics against the true state (``Belief / ...``).
 
     Tracking data is reported via ``self.track_data(...)``, so the
     consuming class must be a ``skrl.agents.torch.Agent`` subclass.
@@ -50,11 +56,14 @@ class BeliefAgentMixin:
         self._b_tilde = b_tilde.clone()
         return b_tilde
 
-    def _belief_advance(self, action: torch.Tensor, next_observation: torch.Tensor) -> torch.Tensor:
+    def _belief_advance(
+        self, action: torch.Tensor, next_observation: torch.Tensor, infos: Any = None
+    ) -> torch.Tensor:
         """Predict with ``action``, update with ``next_observation``, and return b̃_{t+1}.
 
         :param action: Control input passed to the motion model, shape ``[action_dim]`` or ``[1]``.
         :param next_observation: Raw measurement, shape ``[obs_dim]`` (batch dim squeezed off).
+        :param infos: Environment infos, passed to ``cfg.belief_true_state_fn`` for the statistics.
         :return: Compressed belief b̃_{t+1}, shape ``[1, belief_dim]``.
         """
         self._belief.predict(action.squeeze(-1))
@@ -66,11 +75,46 @@ class BeliefAgentMixin:
 
         b_t1 = self._belief.get_compressed().unsqueeze(0)
 
-        self.track_data("Belief / entropy", self._belief.get_entropy().item())
         self.track_data("Belief / compress_ms_record", compress_ms)
+        self._track_belief_stats(infos)
 
         self._b_tilde = b_t1.clone()
         return b_t1
+
+    def _belief_true_state(self, infos: Any) -> torch.Tensor | None:
+        fn = getattr(self.cfg, "belief_true_state_fn", None)
+        return None if fn is None or infos is None else fn(infos)
+
+    def _track_belief_stats(self, infos: Any) -> None:
+        """Track spread, ESS, clusters (count, hefts, stds) and, with a true state, the cluster errors."""
+        stats = belief_stats(self._belief, self._belief_true_state(infos))
+        for key, value in stats.items():
+            if isinstance(value, list):  # per cluster, sorted by decreasing heft
+                for k, v in enumerate(value):
+                    self.track_data(f"Belief / {key[:-1]} {k}", v)
+            else:
+                self.track_data(f"Belief / {key}", value)
+
+    def get_belief_markers(
+        self,
+        true_state: torch.Tensor | None = None,
+        state_to_position: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    ) -> dict[str, Any]:
+        """Current particles, weights and GMM clusters for drawing in a simulator.
+
+        See :func:`skrl.belief.torch.markers.belief_markers`. ``state_to_position`` defaults to
+        ``cfg.belief_state_to_position``. Publish the result to another process with
+        :class:`skrl.belief.torch.markers.BeliefMarkerServer`.
+        """
+        if state_to_position is None:
+            state_to_position = getattr(self.cfg, "belief_state_to_position", None)
+        return belief_markers(self._belief, true_state, state_to_position=state_to_position)
+
+    def _with_belief_markers(self, outputs: dict[str, Any]) -> dict[str, Any]:
+        """Add the belief markers to the ``act()`` outputs when ``cfg.return_belief_markers`` is set."""
+        if getattr(self.cfg, "return_belief_markers", False):
+            outputs["belief_markers"] = self.get_belief_markers()
+        return outputs
 
     @property
     def belief_dim(self) -> int:

@@ -19,6 +19,16 @@ class BeliefDQN_CFG(AgentCfg):
     Must return a configured ParticleFilter (or subclass) with the
     backend already injected.  Required — no default."""
 
+    belief_true_state_fn: Optional[Callable] = None
+    """``f(infos) -> Tensor[state_dim] | None``: true state for the belief statistics (errors of the
+    belief mean and of each GMM cluster mean). ``None``: statistics without errors."""
+
+    belief_state_to_position: Optional[Callable] = None
+    """``f(states[..., state_dim]) -> positions[..., 3]`` used by ``get_belief_markers()``."""
+
+    return_belief_markers: bool = False
+    """Add ``outputs["belief_markers"]`` (see ``get_belief_markers()``) to the outputs of ``act()``."""
+
     num_controllers: int = 20
     """NC — number of discrete low-level motion controllers.
     NC = n_target_poses * NG.  Paper: 20 for peg-in-hole."""

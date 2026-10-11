@@ -165,3 +165,20 @@ def test_rejects_multiple_envs() -> None:
     _init(agent)
     with pytest.raises(ValueError):
         agent.act(torch.randn(2, N_JOINTS), None, timestep=0, timesteps=10)
+
+
+def test_belief_markers_in_outputs_and_stats_tracked() -> None:
+    agent = _init(
+        _make_agent(
+            return_belief_markers=True,
+            belief_true_state_fn=lambda infos: torch.zeros(STATE_DIM),
+            belief_state_to_position=lambda s: s[..., :3],
+        )
+    )
+    _, outputs = _step(agent, 0)
+    markers = outputs["belief_markers"]
+    assert markers["particles"].shape == (NP, STATE_DIM) and markers["cluster_positions"].shape == (NG, 3)
+    _step(agent, 1)
+    for key in ["spread", "ess", "num_clusters", "cluster_std", "mean_error", "cluster_error_min", "cluster_error 0"]:
+        assert f"Belief / {key}" in agent.tracking_data
+    assert agent.get_belief_markers()["stats"]["num_clusters"] >= 1

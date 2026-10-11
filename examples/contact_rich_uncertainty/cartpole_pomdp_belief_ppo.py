@@ -35,6 +35,7 @@ import torch.nn as nn
 import gymnasium
 
 from skrl.agents.torch.ppo import PPO, PPO_CFG
+from skrl.belief.torch.markers import belief_markers
 from skrl.belief.torch.particle_filter import ParticleFilter
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.envs.wrappers.torch.pomdp_wrapper import PomdpWrapper
@@ -95,6 +96,12 @@ def cartpole_step(state: torch.Tensor, action_force: float, noise_std: float = 0
     next_state = next_state + torch.randn_like(next_state) * noise_std
 
     return next_state.squeeze(0) if squeeze else next_state
+
+
+def cartpole_pole_tip(states: torch.Tensor) -> torch.Tensor:
+    """World position ``(x, y, z)`` of the pole tip for CartPole states ``[..., 4]`` (belief markers)."""
+    x, theta = states[..., 0], states[..., 2]
+    return torch.stack([x + 2 * LENGTH * torch.sin(theta), torch.zeros_like(x), 2 * LENGTH * torch.cos(theta)], -1)
 
 
 def make_motion_model(action_force_getter, noise_std: float = 0.05):
@@ -177,6 +184,9 @@ class BeliefObservationWrapper(gymnasium.Wrapper):
         self._belief.update(measurement=torch.tensor(obs, dtype=torch.float32, device=self._device))
         self._belief.compress()
         info["belief_entropy"] = self._belief.get_entropy().item()
+        # particles, GMM clusters and statistics vs the true state, for drawing the belief in a simulator
+        true_state = torch.as_tensor(info["full_obs"], dtype=torch.float32, device=self._device)
+        info["belief"] = belief_markers(self._belief, true_state, state_to_position=cartpole_pole_tip)
 
         return self._belief.get_compressed().cpu().numpy(), reward, terminated, truncated, info
 

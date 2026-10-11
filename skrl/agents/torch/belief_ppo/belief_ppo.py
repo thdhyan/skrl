@@ -177,7 +177,8 @@ class BeliefPPO(BeliefAgentMixin, Agent):
         inputs = {"observations": self._obs_preprocessor(b_tilde)}
 
         if timestep < self.cfg.random_timesteps:
-            return self.policy.random_act(inputs, role="policy")
+            actions, outputs = self.policy.random_act(inputs, role="policy")
+            return actions, self._with_belief_markers(outputs)
 
         with torch.autocast(device_type=self._device_type, enabled=self.cfg.mixed_precision):
             actions, outputs = self.policy.act(inputs, role="policy")
@@ -187,7 +188,7 @@ class BeliefPPO(BeliefAgentMixin, Agent):
                 values, _ = self.value.act(inputs, role="value")
                 self._current_values = self._value_preprocessor(values, inverse=True)
 
-        return actions, outputs
+        return actions, self._with_belief_markers(outputs)
 
     def record_transition(
         self,
@@ -221,7 +222,7 @@ class BeliefPPO(BeliefAgentMixin, Agent):
 
         # b̃_t was set by act(); advance the filter → b̃_{t+1} (kept for GAE bootstrap)
         b_t = self._b_tilde
-        self._belief_advance(actions, next_observations)
+        self._belief_advance(actions, next_observations, infos)
 
         # the env auto-resets after a done step: re-seed the filter on the next act()
         if (terminated | truncated).any():

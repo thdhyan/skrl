@@ -172,13 +172,13 @@ class BeliefDQN(BeliefAgentMixin, Agent):
         # pure random during warm-up
         if timestep < self.cfg.random_timesteps:
             action = torch.randint(0, self._nc, (b_tilde.shape[0], 1), device=self.device)
-            return action, {}
+            return action, self._with_belief_markers({})
 
         if self.cfg.exploration_scheduler is None:
             with torch.autocast(device_type=self._device_type, enabled=self.cfg.mixed_precision):
                 q_values, outputs = self.q_network.act({"observations": b_tilde}, role="q_network")
             action = torch.argmax(q_values, dim=1, keepdim=True)
-            return action, outputs
+            return action, self._with_belief_markers(outputs)
 
         # epsilon-greedy
         epsilon = self.cfg.exploration_scheduler(timestep, timesteps)
@@ -192,7 +192,7 @@ class BeliefDQN(BeliefAgentMixin, Agent):
         if rand_mask.any():
             action[rand_mask] = torch.randint(0, self._nc, (rand_mask.sum().item(), 1), device=self.device)
 
-        return action, outputs
+        return action, self._with_belief_markers(outputs)
 
     def record_transition(
         self,
@@ -236,7 +236,7 @@ class BeliefDQN(BeliefAgentMixin, Agent):
 
         # advance belief with the action's controller reference
         # (the env already stepped; we propagate the filter to match)
-        b_t1 = self._belief_advance(actions, next_observations)
+        b_t1 = self._belief_advance(actions, next_observations, infos)
 
         # shape rewards
         if self.cfg.rewards_shaper is not None:
