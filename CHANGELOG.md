@@ -2,6 +2,17 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+### Added
+- 2D grid pursuit-evasion environment (n pursuers vs. 1 evader) with potential fields and pluggable observation
+  groups (`full_state`, `global_potential`, `local_potential`) in `skrl.envs.pursuit_evasion`
+- `"pursuit-evasion"` torch multi-agent environment wrapper
+- Generation-based self-play runner with opponent pools, Elo ratings and opponent samplers
+  (`last`, `best`, `uniform`, `hedge`, `adaptive_pbt`) in `skrl.multi_agents.torch.selfplay`
+
+### Fixed
+- Multi-agent configuration expansion rejecting empty dictionaries (e.g. default `*_kwargs`) as partial per-agent values
+
 ## [2.1.0] - 2026-05-10
 ### Changed
 - Improving the robustness and learning capabilities of on-policy algorithms:

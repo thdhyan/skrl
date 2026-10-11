@@ -23,6 +23,7 @@ def wrap_env(
         "mani-skill",
         "pettingzoo",
         "playground",
+        "pursuit-evasion",
     ] = "auto",
     verbose: bool = True,
 ) -> Wrapper | MultiAgentEnvWrapper:
@@ -63,6 +64,8 @@ def wrap_env(
               - Wrapper tag
             * - PettingZoo
               - ``"pettingzoo"``
+            * - skrl pursuit-evasion grid
+              - ``"pursuit-evasion"``
             * - Isaac Lab
               - ``"isaaclab"`` (``"isaaclab-multi-agent"``)
     :param verbose: Whether to print verbose information about the environment and the wrapper.
@@ -93,7 +96,9 @@ def wrap_env(
         if verbose:
             logger.info(f"Environment wrapper: 'auto' (class: {', '.join(base_classes)})")
 
-        if _in(["omni.isaac.lab.*", "isaaclab.*"], base_classes):
+        if type(env).__module__.startswith("skrl.envs.pursuit_evasion"):
+            return "pursuit-evasion"
+        elif _in(["omni.isaac.lab.*", "isaaclab.*"], base_classes):
             return "isaaclab-*"
         elif _in("mujoco_playground..*", base_classes):
             return "playground"
@@ -128,6 +133,12 @@ def wrap_env(
         from skrl.envs.wrappers.torch.pettingzoo_envs import PettingZooWrapper
 
         return PettingZooWrapper(env)
+    elif wrapper == "pursuit-evasion":
+        if verbose:
+            logger.info("Environment wrapper: pursuit-evasion grid")
+        from skrl.envs.wrappers.torch.pursuit_evasion_envs import PursuitEvasionWrapper
+
+        return PursuitEvasionWrapper(env)
     elif wrapper == "mani-skill":
         if verbose:
             logger.info("Environment wrapper: ManiSkill")

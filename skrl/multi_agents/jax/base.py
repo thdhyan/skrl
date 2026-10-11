@@ -83,7 +83,7 @@ class MultiAgentCfg(ABC):
             if field.name in immutable:
                 continue
             value = getattr(self, field.name)
-            if isinstance(value, dict):
+            if isinstance(value, dict) and value:  # an empty dict is a shared (non per-agent) value
                 if set(value) >= set(possible_agents):
                     continue
                 elif set(value) < set(possible_agents):
