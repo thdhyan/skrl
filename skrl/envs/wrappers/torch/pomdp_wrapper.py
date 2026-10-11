@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Sequence
 
 import numpy as np
-import torch
 import gymnasium
-
-from skrl.envs.wrappers.torch.gymnasium_envs import GymnasiumWrapper
 
 
 class PomdpWrapper(gymnasium.Wrapper):
@@ -22,7 +19,8 @@ class PomdpWrapper(gymnasium.Wrapper):
 
     :param env: Base gymnasium environment.
     :param hidden_obs_indices: Indices of observation dimensions to zero out
-        (i.e. not shown to the agent).
+        (i.e. not shown to the agent). Indices refer to the flattened observation
+        (negative indices count from the end; duplicates are ignored).
         Example for CartPole: [1, 3] hides cart velocity and pole angular velocity.
     :param obs_noise_std: Gaussian noise std added to visible observations.
         Simulates sensor noise (paper uses 1 deg ≈ 0.0175 rad for encoders).
@@ -38,15 +36,23 @@ class PomdpWrapper(gymnasium.Wrapper):
         seed: int | None = None,
     ) -> None:
         super().__init__(env)
-        self._hidden = list(hidden_obs_indices)
         self._noise_std = obs_noise_std
         self._rng = np.random.default_rng(seed)
 
-        # mask: 1 = visible, 0 = hidden
+        # normalize the (flat) hidden indices: negative -> positive, sorted, unique
         n = int(np.prod(env.observation_space.shape))
+        hidden = set()
+        for i in hidden_obs_indices:
+            i = int(i)
+            if not -n <= i < n:
+                raise ValueError(f"Hidden observation index {i} out of range for an observation of size {n}")
+            hidden.add(i % n)
+        self._hidden = sorted(hidden)
+
+        # mask: 1 = visible, 0 = hidden (same shape as the observation)
         self._mask = np.ones(n, dtype=np.float32)
-        for i in self._hidden:
-            self._mask[i] = 0.0
+        self._mask[self._hidden] = 0.0
+        self._mask = self._mask.reshape(env.observation_space.shape)
 
         # observation space unchanged in shape (zeros for hidden dims)
         self.observation_space = env.observation_space
@@ -61,6 +67,7 @@ class PomdpWrapper(gymnasium.Wrapper):
     def reset(self, **kwargs) -> tuple[np.ndarray, dict]:
         obs, info = self.env.reset(**kwargs)
         self._last_full_obs = obs.copy()
+        info["full_obs"] = obs.copy()
         return self._apply_mask(obs), info
 
     def step(self, action) -> tuple[np.ndarray, float, bool, bool, dict]:
@@ -78,11 +85,12 @@ class PomdpWrapper(gymnasium.Wrapper):
         return self._last_full_obs
 
     def _apply_mask(self, obs: np.ndarray) -> np.ndarray:
+        dtype = obs.dtype
         obs = obs * self._mask
         if self._noise_std > 0.0:
-            noise = self._rng.normal(0.0, self._noise_std, size=obs.shape).astype(np.float32)
+            noise = self._rng.normal(0.0, self._noise_std, size=obs.shape)
             obs = obs + noise * self._mask
-        return obs
+        return obs.astype(dtype, copy=False)
 
     @property
     def hidden_indices(self) -> list[int]:
@@ -90,5 +98,4 @@ class PomdpWrapper(gymnasium.Wrapper):
 
     @property
     def visible_indices(self) -> list[int]:
-        n = int(np.prod(self.env.observation_space.shape))
-        return [i for i in range(n) if i not in self._hidden]
+        return [int(i) for i in np.flatnonzero(self._mask.reshape(-1))]

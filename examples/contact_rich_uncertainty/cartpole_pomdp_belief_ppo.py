@@ -17,8 +17,12 @@ Usage:
     python examples/contact_rich_uncertainty/cartpole_pomdp_belief_ppo.py --headless --timesteps 20000
     # same POMDP, same PPO hyperparameters, raw obs instead of belief -- comparison baseline
     python examples/contact_rich_uncertainty/cartpole_pomdp_belief_ppo.py --headless --timesteps 20000 --baseline
+    # same PPO hyperparameters, fully observable CartPole (same sensor noise) -- upper bound
+    python examples/contact_rich_uncertainty/cartpole_pomdp_belief_ppo.py --headless --timesteps 20000 --full-obs
     # then compare learning curves:
     tensorboard --logdir runs/torch
+    # or log to Weights & Biases (add WANDB_MODE=offline to log locally and `wandb sync` later)
+    python examples/contact_rich_uncertainty/cartpole_pomdp_belief_ppo.py --headless --wandb --wandb-project pomdp
 """
 from __future__ import annotations
 
@@ -152,13 +156,13 @@ class BeliefObservationWrapper(gymnasium.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        full_obs = self.env.get_full_obs()
         n = self._belief.num_particles
 
+        # the prior is centred on the (noisy, masked) first observation -- not on the ground truth
         prior = torch.zeros(n, self._state_dim, device=self._device)
-        prior[:, 0] = float(full_obs[0]) + torch.randn(n) * 0.3
+        prior[:, 0] = float(obs[0]) + torch.randn(n) * 0.3
         prior[:, 1] = torch.randn(n) * 1.0    # unknown cart velocity
-        prior[:, 2] = float(full_obs[2]) + torch.randn(n) * 0.05
+        prior[:, 2] = float(obs[2]) + torch.randn(n) * 0.05
         prior[:, 3] = torch.randn(n) * 0.5     # unknown pole angular velocity
         self._belief.reset(prior)
         self._belief.compress()
@@ -250,13 +254,18 @@ def run(
     masscart: float = MASSCART,
     masspole: float = MASSPOLE,
     log_dir: str | None = None,
+    full_obs: bool = False,
+    wandb_project: str | None = None,
+    wandb_group: str | None = None,
 ) -> None:
     set_seed(seed)
 
     base_env = gymnasium.make("CartPole-v1", render_mode=None if headless else "human")
     apply_cartpole_physics(base_env, masscart, masspole)
-    env = PomdpWrapper(base_env, hidden_obs_indices=HIDDEN, obs_noise_std=0.02, seed=seed)
-    if not baseline:
+    # full_obs: nothing hidden (same sensor noise) -- fully observable upper bound, trained on raw obs
+    env = PomdpWrapper(base_env, hidden_obs_indices=[] if full_obs else HIDDEN, obs_noise_std=0.02, seed=seed)
+    condition = "full_obs" if full_obs else ("masked" if baseline else "masked_belief")
+    if not (baseline or full_obs):
         # belief-based: policy/value see the GMM-compressed belief b̃ instead of raw obs
         env = BeliefObservationWrapper(env, device=device)
     # baseline: policy/value see the raw, partially-masked obs directly (same POMDP, no belief)
@@ -289,8 +298,21 @@ def run(
     cfg.experiment.write_interval = "auto"
     cfg.experiment.checkpoint_interval = "auto"
     if log_dir is None:
-        log_dir = "runs/torch/CartPolePOMDP_BaselinePPO" if baseline else "runs/torch/CartPolePOMDP_BeliefPPO"
+        log_dir = {
+            "full_obs": "runs/torch/CartPole_FullObsPPO",
+            "masked": "runs/torch/CartPolePOMDP_BaselinePPO",
+            "masked_belief": "runs/torch/CartPolePOMDP_BeliefPPO",
+        }[condition]
     cfg.experiment.directory = log_dir
+    if wandb_project:
+        cfg.experiment.experiment_name = f"{condition}_seed{seed}"
+        cfg.experiment.wandb = True
+        cfg.experiment.wandb_kwargs = {
+            "project": wandb_project,
+            "group": wandb_group or condition,
+            "tags": [condition],
+            "config": {"condition": condition, "hidden_obs_indices": [] if full_obs else HIDDEN, "seed": seed},
+        }
 
     agent = PPO(
         models=models,
@@ -305,6 +327,10 @@ def run(
     print(f"TensorBoard: tensorboard --logdir {cfg.experiment.directory}")
     trainer = SequentialTrainer(cfg={"timesteps": timesteps, "headless": headless}, env=env, agents=agent)
     trainer.train()
+    if wandb_project:
+        import wandb
+
+        wandb.finish()
 
 
 if __name__ == "__main__":
@@ -319,6 +345,10 @@ if __name__ == "__main__":
         help="Skip the belief wrapper: train PPO directly on the raw partially-masked obs (POMDP, no belief). "
         "Use this to get a same-hyperparameter comparison curve against the belief-based run.",
     )
+    parser.add_argument("--full-obs", action="store_true", help="Hide nothing: fully observable PPO upper bound.")
+    parser.add_argument("--wandb", action="store_true", help="Log to Weights & Biases (TensorBoard sync).")
+    parser.add_argument("--wandb-project", default="skrl-cartpole-pomdp")
+    parser.add_argument("--wandb-group", default=None, help="Default: the condition name.")
     parser.add_argument("--masscart", type=float, default=MASSCART, help="Override cart mass (default 1.0 kg).")
     parser.add_argument("--masspole", type=float, default=MASSPOLE, help="Override pole mass (default 0.1 kg).")
     parser.add_argument("--log-dir", default=None, help="Override TensorBoard/checkpoint directory.")
@@ -333,4 +363,7 @@ if __name__ == "__main__":
         masscart=args.masscart,
         masspole=args.masspole,
         log_dir=args.log_dir,
+        full_obs=args.full_obs,
+        wandb_project=args.wandb_project if args.wandb else None,
+        wandb_group=args.wandb_group,
     )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from tensorboard.compat.proto.event_pb2 import Event
 from tensorboard.compat.proto.summary_pb2 import Summary
-from tensorboard.summary.writer.event_file_writer import EventFileWriter
+from tensorboard.summary.writer import event_file_writer
 
 
 class SummaryWriter:
@@ -14,7 +14,11 @@ class SummaryWriter:
         :param queue_size: Maximum number of events to keep in the queue before forcing a flush to persistent storage.
         :param flush_seconds: Number of seconds between flushing pending events to persistent storage.
         """
-        self._event_file_writer = EventFileWriter(log_dir, max_queue_size=queue_size, flush_secs=flush_seconds)
+        # resolve the writer class at instantiation (not import) time so that integrations that patch the module
+        # attribute, such as Weights & Biases' ``sync_tensorboard``, also capture the events written by skrl
+        self._event_file_writer = event_file_writer.EventFileWriter(
+            log_dir, max_queue_size=queue_size, flush_secs=flush_seconds
+        )
 
     def add_scalar(self, *, tag: str, value: float, timestep: int) -> None:
         """Add a scalar value to the summary.
