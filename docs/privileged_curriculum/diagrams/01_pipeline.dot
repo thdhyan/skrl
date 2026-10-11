@@ -1,0 +1,36 @@
+digraph privileged_ppo {
+    rankdir=LR;
+    fontname="Helvetica"; fontsize=12;
+    label="PrivilegedPPO — privileged encoder, history estimator, softmax mask curriculum"; labelloc=t;
+    node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10];
+    edge [fontname="Helvetica", fontsize=9];
+
+    env  [label="Env (POMDP)\n+ domain randomization", fillcolor="#dbe4f0"];
+    wrap [label="PrivilegedHistoryWrapper\nobs = [ o_t | o_{t-H..t-1} | priv | mask ]", fillcolor="#fde9c9"];
+    cur  [label="SoftmaxMaskCurriculum\np_mask(progress) = rescaled σ(k·(progress − c))\n0 → 1 over training", fillcolor="#f6d5d5"];
+
+    subgraph cluster_actor {
+        label="Actor (PrivilegedActorTrunk)"; style="rounded,dashed";
+        enc  [label="Encoder\npriv → z", fillcolor="#e3f1e0"];
+        est  [label="Estimator\n[o_t, history] → ẑ", fillcolor="#e3f1e0"];
+        gate [label="mask ? ẑ : z", shape=diamond, fillcolor="#ffffff"];
+        act  [label="Actor MLP\n[o_t, latent] → π(a)", fillcolor="#e3f1e0"];
+    }
+    critic [label="Critic (asymmetric)\n[o_t, priv] → V", fillcolor="#e8e0f1"];
+    reg    [label="Regularizer (after each PPO update)\n‖sg(z) − ẑ‖²  +  λ‖z − sg(ẑ)‖²", fillcolor="#f6d5d5"];
+    ppo    [label="PPO update\nclipped surrogate + value + entropy", fillcolor="#e8e0f1"];
+
+    env -> wrap [label="o_t, priv"];
+    cur -> wrap [label="mask ~ Bernoulli(p_mask)\nonce per episode", style=dashed];
+    wrap -> enc [label="priv"];
+    wrap -> est [label="o_t + history"];
+    enc -> gate [label="z"];
+    est -> gate [label="ẑ"];
+    gate -> act;
+    wrap -> act [label="o_t"];
+    wrap -> critic;
+    act -> env [label="a_t"];
+    act -> ppo; critic -> ppo;
+    enc -> reg [style=dashed]; est -> reg [style=dashed];
+    ppo -> cur [label="progress = t / T", style=dashed];
+}

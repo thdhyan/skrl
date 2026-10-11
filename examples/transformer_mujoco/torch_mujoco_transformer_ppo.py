@@ -5,8 +5,8 @@ Usage (from the repository root)::
     python examples/transformer_mujoco/torch_mujoco_transformer_ppo.py --task InvertedPendulum-v5 --model transformer
     python examples/transformer_mujoco/torch_mujoco_transformer_ppo.py --task InvertedPendulum-v5 --model mlp --video
 
-Logs and checkpoints go to ``runs/transformer_mujoco/<task>_<model>/``; with ``--video`` an eval rollout
-(mp4) is recorded to ``runs/transformer_mujoco/<task>_<model>/videos/``.
+Logs and checkpoints go to ``runs/transformer_mujoco/<task>_<model>_seed<seed>/``; with ``--video`` an eval rollout
+(mp4) is recorded to ``runs/transformer_mujoco/<task>_<model>_seed<seed>/videos/``.
 """
 
 import argparse
@@ -42,12 +42,12 @@ args = parser.parse_args()
 
 set_seed(args.seed)
 
-run_dir = f"runs/transformer_mujoco/{args.task}_{args.model}"
+run_dir = f"runs/transformer_mujoco/{args.task}_{args.model}_seed{args.seed}"
 
 
 # MLP baseline with the same sizes as the skrl pendulum example (2 hidden layers of 64, ReLU)
 class MLPGaussianPolicy(GaussianMixin, Model):
-    def __init__(self, observation_space, action_space, device, clip_actions=True):
+    def __init__(self, observation_space, action_space, device, clip_actions=False):
         Model.__init__(self, observation_space=observation_space, action_space=action_space, device=device)
         GaussianMixin.__init__(self, clip_actions=clip_actions, reduction="sum")
         self.net = nn.Sequential(
@@ -92,7 +92,9 @@ else:
     policy_cls, value_cls = MLPGaussianPolicy, MLPValue
 
 models = {}
-models["policy"] = policy_cls(env.observation_space, env.action_space, device, clip_actions=True)
+# no action clipping in the model: GaussianMixin computes log_prob on the clipped action, so a mean outside
+# the bounds gives log_probs of -1e2..-1e3 and the PPO ratio overflows to inf/NaN. MuJoCo clamps to ctrlrange.
+models["policy"] = policy_cls(env.observation_space, env.action_space, device, clip_actions=False)
 models["value"] = value_cls(env.observation_space, env.action_space, device)
 
 cfg = PPO_CFG()
@@ -139,7 +141,9 @@ env.close()
 
 if args.video:
     video_dir = os.path.join(run_dir, "videos")
-    eval_env = gym.make(args.task, render_mode="rgb_array")
+    # HalfCheetah's default camera is static and the cheetah leaves the frame: use its tracking camera
+    camera = {"camera_name": "track"} if args.task == "HalfCheetah-v5" else {}
+    eval_env = gym.make(args.task, render_mode="rgb_array", **camera)
     eval_env = gym.wrappers.RecordVideo(eval_env, video_folder=video_dir, name_prefix=args.task)
     obs, _ = eval_env.reset(seed=args.seed)
     episode_return, done = 0.0, False
