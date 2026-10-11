@@ -235,3 +235,38 @@ def test_population_options():
     assert make_population_runner(sampler="uniform", population_size=None).population_size == 1
     with pytest.raises(ValueError):
         make_population_runner(population_size=9)
+
+
+def test_wandb_logging_one_step_per_generation(monkeypatch):
+    import sys
+    import types
+
+    calls = {"init": [], "log": [], "finish": 0}
+    fake = types.ModuleType("wandb")
+    fake.run = None
+
+    def init(**kwargs):
+        calls["init"].append(kwargs)
+        fake.run = object()
+
+    def finish():
+        calls["finish"] += 1
+        fake.run = None
+
+    fake.init = init
+    fake.log = lambda metrics, step: calls["log"].append((step, metrics))
+    fake.finish = finish
+    monkeypatch.setitem(sys.modules, "wandb", fake)
+
+    runner = make_population_runner(wandb=True, wandb_kwargs={"project": "test", "config": {"tag": "x"}})
+    runner.run()
+    runner.close()
+    assert len(calls["init"]) == 1 and calls["init"][0]["project"] == "test"
+    config = calls["init"][0]["config"]
+    assert config["sampler"] == "adaptive_pbt" and config["population_size"] == 4 and config["tag"] == "x"
+    assert config["env"]["obs_mode"] == "full_state"
+    assert [step for step, _ in calls["log"]] == [1, 2]
+    step1 = calls["log"][0][1]
+    assert {"pursuers/train_win_rate", "pursuers/eval_score", "pursuers/opponent_entropy"} <= set(step1)
+    assert "pursuers/member3/learning_rate" in step1 and "evader/eval_score" in calls["log"][1][1]
+    assert calls["finish"] == 1

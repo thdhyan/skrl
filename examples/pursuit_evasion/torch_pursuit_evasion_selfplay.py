@@ -41,6 +41,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sampler-kwargs", type=json.loads, default={}, help='e.g. \'{"eta": 0.2, "top_k": 3}\'')
     parser.add_argument("--scheme", default="alternating", choices=["alternating", "simultaneous"])
     parser.add_argument("--first-learner", default="pursuers", choices=["pursuers", "evader"])
+    parser.add_argument(
+        "--learning-teams", nargs="+", default=None, choices=["pursuers", "evader"], help="default: both teams"
+    )
     parser.add_argument("--algorithm", default="mappo", choices=["mappo", "ippo"])
     parser.add_argument("--eval-episodes", type=int, default=64, help="evaluation episodes per opponent")
     parser.add_argument("--eval-max-opponents", type=int, default=4)
@@ -56,6 +59,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden", type=int, nargs="+", default=(128, 128), help="MLP hidden sizes")
     # misc
     parser.add_argument("--checkpoint-dir", default=None, help="write snapshots and history.json here")
+    parser.add_argument("--wandb", action="store_true", help="log every generation to Weights & Biases")
+    parser.add_argument("--wandb-project", default="skrl-pursuit-evasion")
+    parser.add_argument("--wandb-group", default=None)
+    parser.add_argument("--wandb-name", default=None)
     parser.add_argument("--device", default=None)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
@@ -90,6 +97,7 @@ def main() -> None:
         sampler_kwargs=args.sampler_kwargs,
         training_scheme=args.scheme,
         first_learner=args.first_learner,
+        learning_teams=args.learning_teams,
         eval_episodes=args.eval_episodes,
         eval_max_opponents=args.eval_max_opponents,
         pbt=None if args.pbt is None else args.pbt == "on",
@@ -104,9 +112,12 @@ def main() -> None:
         },
         checkpoint_dir=args.checkpoint_dir,
         seed=args.seed,
+        wandb=args.wandb,
+        wandb_kwargs={"project": args.wandb_project, "group": args.wandb_group, "name": args.wandb_name},
     )
     runner = SelfPlayRunner(env, cfg)
     history = runner.run()
+    runner.close()
 
     print("\nfinal Elo ratings")
     for team, pool in runner.pools.items():

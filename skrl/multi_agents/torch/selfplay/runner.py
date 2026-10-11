@@ -139,6 +139,10 @@ class SelfPlayCfg:
     """If set, snapshots (``{team}_gen{g}.pt``) and ``history.json`` are written there."""
     verbose: bool = True
     """Log a summary of every generation."""
+    wandb: bool = False
+    """Log every generation's metrics to Weights & Biases (one step per generation)."""
+    wandb_kwargs: dict = dataclasses.field(default_factory=dict)
+    """Keyword arguments of ``wandb.init`` (e.g. ``project``, ``group``, ``name``, ``mode``)."""
 
 
 @dataclasses.dataclass
@@ -803,9 +807,47 @@ class SelfPlayRunner:
                 os.makedirs(self.cfg.checkpoint_dir, exist_ok=True)
                 with open(os.path.join(self.cfg.checkpoint_dir, "history.json"), "w") as file:
                     json.dump(self.history, file, indent=2, default=str)
+            if self.cfg.wandb:
+                self._wandb_log(record)
             if callback is not None:
                 callback(record)
         return self.history
+
+    def _wandb_log(self, record: dict) -> None:
+        import wandb
+
+        if wandb.run is None:
+            kwargs = copy.deepcopy(self.cfg.wandb_kwargs)
+            config = {**dataclasses.asdict(self.cfg), "population_size": self.population_size}
+            config["env"] = {k: v for k, v in vars(getattr(self.env, "cfg", object())).items() if k != "obstacles"}
+            config.update(kwargs.pop("config", {}))
+            wandb.init(config=json.loads(json.dumps(config, default=str)), **kwargs)
+        metrics: dict[str, float] = {"generation": record["generation"], "elapsed_s": record["elapsed_s"]}
+        for team, info in record["teams"].items():
+            if info["train_win_rate"] is not None:
+                metrics[f"{team}/train_win_rate"] = info["train_win_rate"]
+            metrics[f"{team}/train_games"] = info["train_games"]
+            metrics[f"{team}/eval_score"] = sum(info["eval_win_rate"].values()) / len(info["eval_win_rate"])
+            metrics[f"{team}/rating"] = info["rating"]
+            probabilities = torch.tensor(info["opponent_distribution"], dtype=torch.float64).clamp(min=1e-12)
+            metrics[f"{team}/opponent_entropy"] = float(-(probabilities * probabilities.log()).sum())
+            metrics[f"{team}/pool_size"] = len(self.pools[team])
+            for member in info.get("members", []):
+                prefix = f"{team}/member{member['member']}"
+                metrics[f"{prefix}/eval_score"] = member["eval_score"]
+                metrics[f"{prefix}/rating"] = member["rating"]
+                metrics[f"{prefix}/learning_rate"] = member["hyperparameters"]["learning_rate"]
+                metrics[f"{prefix}/entropy_loss_scale"] = member["hyperparameters"]["entropy_loss_scale"]
+                metrics[f"{prefix}/exploited"] = float("exploit_from_member" in member.get("pbt", {}))
+        wandb.log(metrics, step=record["generation"])
+
+    def close(self) -> None:
+        """Finish the Weights & Biases run (if any)."""
+        if self.cfg.wandb:
+            import wandb
+
+            if wandb.run is not None:
+                wandb.finish()
 
     @staticmethod
     def _entry_label(entry: PolicySnapshot) -> str | int:
