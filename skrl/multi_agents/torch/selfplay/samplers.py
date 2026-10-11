@@ -12,7 +12,8 @@ Registered strategies (``make_sampler(name, **kwargs)``):
 * ``"uniform"``: uniform over all snapshots (fictitious self-play).
 * ``"hedge"``: Hedge / exponential weights (Exp3 flavour) that upweights opponents that beat the learner.
 * ``"adaptive_pbt"``: adaptive prioritized fictitious self-play (PFSP) whose weighting adapts to the learner's
-  progress (the runner can additionally perform population-based exploit/explore of the learner, see ``SelfPlayCfg``).
+  progress. With it the runner trains a population of concurrent learners per team with population-based training
+  (see ``SelfPlayCfg.population_size`` and ``SelfPlayCfg.pbt``).
 """
 
 from __future__ import annotations
@@ -215,11 +216,14 @@ class AdaptivePBTSampler(OpponentSampler):
         min_exponent: float = 1.0,
         max_exponent: float = 8.0,
         prior: float = 0.5,
+        ema_decay: float = 0.05,
     ) -> None:
         """(e) Adaptive population-based sampling: prioritized fictitious self-play (PFSP) with adaptive priority.
 
         Each snapshot ``i`` gets the weight ``f(x_i) + epsilon_floor`` where ``x_i`` is the learner's estimated win
-        probability against it (exponential moving average of game outcomes kept by the pool, ``prior`` if unseen):
+        probability against it (exponential moving average, with step size ``ema_decay``, of the game outcomes this
+        sampler was updated with; ``prior`` if unseen). The estimates belong to the sampler, not to the pool, so every
+        member of a learner population (see ``SelfPlayCfg.population_size``) keeps its own match-up statistics:
 
         * ``"hard"``: ``f(x) = (1 - x)^p`` -- focus on the opponents the learner struggles against.
         * ``"variance"``: ``f(x) = x * (1 - x)`` -- focus on evenly-matched opponents (useful when the learner is
@@ -231,9 +235,10 @@ class AdaptivePBTSampler(OpponentSampler):
         * ``w < lower_win_rate``: learner struggles -> switch to ``"variance"`` and soften ``p``.
         * otherwise keep the current setting.
 
-        The final distribution is mixed with ``epsilon`` uniform exploration over the whole population. Together with
-        ``SelfPlayCfg.pbt`` (population-based exploit/explore of the learner's weights and hyper-parameters) this is
-        the "adaptive population-based" strategy.
+        The final distribution is mixed with ``epsilon`` uniform exploration over the whole opponent pool. Together
+        with the runner's population of concurrent learners and its population-based training (``SelfPlayCfg.pbt``:
+        truncation selection, exploit and explore of weights and hyper-parameters) this is the "adaptive
+        population-based" strategy.
         """
         if weighting not in ("hard", "variance"):
             raise ValueError(f"Unknown PFSP weighting: {weighting}")
@@ -246,6 +251,16 @@ class AdaptivePBTSampler(OpponentSampler):
         self.min_exponent = min_exponent
         self.max_exponent = max_exponent
         self.prior = prior
+        self.ema_decay = ema_decay
+        self.win_rates: dict[int, float] = {}
+
+    def update(self, pool: OpponentPool, indices: torch.Tensor, learner_scores: torch.Tensor) -> None:
+        for index, score in zip(indices.tolist(), learner_scores.tolist()):
+            key = pool[index].id
+            if key not in self.win_rates:
+                self.win_rates[key] = float(score)
+            else:
+                self.win_rates[key] += self.ema_decay * (score - self.win_rates[key])
 
     def priority(self, win_rates: torch.Tensor) -> torch.Tensor:
         if self.weighting == "hard":
@@ -253,7 +268,7 @@ class AdaptivePBTSampler(OpponentSampler):
         return win_rates * (1.0 - win_rates)
 
     def probabilities(self, pool: OpponentPool) -> torch.Tensor:
-        win_rates = torch.tensor([entry.learner_win_rate(self.prior) for entry in pool], dtype=torch.float64)
+        win_rates = torch.tensor([self.win_rates.get(entry.id, self.prior) for entry in pool], dtype=torch.float64)
         weights = self.priority(win_rates) + 1e-6
         weights = weights / weights.sum()
         return (1.0 - self.epsilon) * weights + self.epsilon / len(pool)

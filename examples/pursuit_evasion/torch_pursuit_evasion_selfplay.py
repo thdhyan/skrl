@@ -6,6 +6,9 @@ Examples::
     python examples/pursuit_evasion/torch_pursuit_evasion_selfplay.py --n-pursuers 3 --grid 10 10 \\
         --obs-mode local_potential --sampler hedge --generations 20 --timesteps-per-generation 3000
 
+    # adaptive population-based self-play: 4 concurrent learners per team with population-based training
+    python examples/pursuit_evasion/torch_pursuit_evasion_selfplay.py --sampler adaptive_pbt --population-size 4
+
     # quick CPU check (a few seconds)
     python examples/pursuit_evasion/torch_pursuit_evasion_selfplay.py --generations 2 \\
         --timesteps-per-generation 64 --num-envs 8 --eval-episodes 8 --device cpu
@@ -42,6 +45,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-episodes", type=int, default=64, help="evaluation episodes per opponent")
     parser.add_argument("--eval-max-opponents", type=int, default=4)
     parser.add_argument("--pbt", default=None, choices=["on", "off"], help="default: on for adaptive_pbt only")
+    parser.add_argument(
+        "--population-size", type=int, default=None, help="learners per team (default: 4 for adaptive_pbt, else 1)"
+    )
+    parser.add_argument("--population-snapshots", default="all", choices=["all", "best"])
+    parser.add_argument("--pbt-truncation", type=float, default=0.25, help="fraction replaced by truncation selection")
     parser.add_argument("--rollouts", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--entropy", type=float, default=0.01, help="entropy loss scale")
@@ -85,6 +93,9 @@ def main() -> None:
         eval_episodes=args.eval_episodes,
         eval_max_opponents=args.eval_max_opponents,
         pbt=None if args.pbt is None else args.pbt == "on",
+        population_size=args.population_size,
+        population_snapshots=args.population_snapshots,
+        pbt_truncation=args.pbt_truncation,
         hidden_sizes=tuple(args.hidden),
         agent_cfg={
             "rollouts": args.rollouts,
@@ -99,7 +110,7 @@ def main() -> None:
 
     print("\nfinal Elo ratings")
     for team, pool in runner.pools.items():
-        print(f"  {team}: " + ", ".join(f"g{entry.generation}={entry.rating:.0f}" for entry in pool))
+        print(f"  {team}: " + ", ".join(f"g{runner._entry_label(entry)}={entry.rating:.0f}" for entry in pool))
     last = history[-1]["teams"]
     print("last generation:", {team: info["eval_win_rate"] for team, info in last.items()})
 

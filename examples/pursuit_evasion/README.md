@@ -95,24 +95,41 @@ class MyGroup(ObservationBuilder):
 
 ## Self-play runner
 
-Each team has a learner (MAPPO or IPPO, MLP categorical policy + MLP value; MAPPO's critic uses the global state)
-and an opponent pool of frozen snapshots (generation 0 = initial random policies). For every generation:
+Each team has a **population** of `population_size` learners (MAPPO or IPPO, MLP categorical policy + MLP value;
+MAPPO's critic uses the global state) and an opponent pool of frozen snapshots (generation 0 = initial random
+policies). The population defaults to 4 members for `adaptive_pbt` and 1 for every other sampler. Members are
+fully independent: own weights, optimizer, learning rate, entropy coefficient, Elo rating and opponent sampler. They
+train concurrently, each on its own contiguous slice of the team's sub-environments (`num_envs` is split evenly, so
+use at least `population_size` sub-environments per learning team). For every generation:
 
-1. **Train** for `timesteps_per_generation` steps. Each sub-environment plays an opponent snapshot drawn by the
-   sampler from the other team's pool; a new opponent is drawn per sub-environment whenever its episode ends.
-   Outcomes update per-snapshot learner win-rate statistics (EMA) and adaptive samplers.
-2. **Evaluate** the learner (`eval_episodes` per opponent) against the most recent snapshots and the best-rated
-   snapshot of the opposing pool (`eval_max_opponents`), and update zero-sum Elo ratings.
-3. **Snapshot** the learner into its own pool.
-4. **PBT** (optional, default on for `adaptive_pbt`): the best-rated snapshot of the learner's own pool is
-   evaluated against the same opponents; if the new snapshot scores more than `pbt_margin` worse, the learner reloads
-   the best snapshot's weights (exploit) and multiplies its learning rate and entropy coefficient by a random factor
-   in `pbt_perturb_factors` (explore).
+1. **Train** every member for `timesteps_per_generation` steps. Each sub-environment plays an opponent snapshot drawn
+   by the member's sampler from the other team's pool; a new opponent is drawn per sub-environment whenever its
+   episode ends. Outcomes update the pool's statistics and the member's (adaptive) sampler.
+2. **Evaluate** every member (`eval_episodes` per opponent) against the same opponents -- the most recent snapshots
+   and the best-rated snapshot of the opposing pool (`eval_max_opponents`) -- and update zero-sum Elo ratings.
+3. **Snapshot** the members into the team's pool (`population_snapshots`: `"all"`, or only the `"best"`), in
+   increasing order of evaluation score, so the generation's strongest member is the latest pool entry (what the
+   `last` sampler picks).
+4. **PBT** (optional, default on for `adaptive_pbt`):
+   * population: **truncation selection**. Members are ranked by mean evaluation score (comparable: same opponents,
+     same episodes). Each member in the bottom `pbt_truncation` fraction (default 25%, at least one) that scores more
+     than `pbt_margin` below a random member of the top fraction **exploits** it -- copying its policy/value weights,
+     optimizer state, learning rate, entropy coefficient, rating and sampler statistics -- then **explores** by
+     multiplying its learning rate and entropy coefficient by a random factor in `pbt_perturb_factors`. Members 1..P-1
+     start from log-uniformly perturbed hyper-parameters (`pbt_init_range`, default x0.5..x2) so the population is
+     diverse from the start.
+   * single learner (`population_size=1`): the best-rated snapshot of the learner's own pool is evaluated against the
+     same opponents; if the new snapshot scores more than `pbt_margin` worse, the learner reloads it (exploit) and
+     perturbs its hyper-parameters (explore).
+
+The generation record of a team reports training statistics over the whole population and the evaluation of its
+best member; with a population it also lists every member (`members`: score, rating, hyper-parameters, opponent
+distribution, PBT event) and the `best_member`. `runner.learners[team]` is the current best member's agent.
 
 Training schemes (`training_scheme`): `alternating` (one team learns per generation on all sub-environments,
 starting with `first_learner`) or `simultaneous` (both teams learn every generation, each on half of the
 sub-environments). `learning_teams` can freeze a team entirely. With `checkpoint_dir` each snapshot is stored as
-`{team}_gen{g}.pt` together with `history.json`.
+`{team}_gen{g}.pt` (`{team}_gen{g}_member{i}.pt` with a population) together with `history.json`.
 
 ## Opponent samplers (`sampler`)
 
@@ -122,7 +139,7 @@ sub-environments). `learning_teams` can freeze a team entirely. With `checkpoint
 | `best` | (b) only the highest Elo-rated generation (latest on ties) |
 | `uniform` | (c) uniform over all generations (fictitious self-play) |
 | `hedge` | (d) Hedge / exponential weights: `p_i = (1 - gamma) softmax(eta * G_i) + gamma / K`, where `G_i` accumulates the importance-weighted (Exp3) loss the learner suffered against snapshot `i`. Opponents that beat the learner are upweighted, mastered ones fade out; new snapshots start optimistically at `max G`. `top_k` restricts the support to the `k` best-rated generations. |
-| `adaptive_pbt` | (e) adaptive PFSP: weight `f(x_i)` of the learner's estimated win rate `x_i` against each snapshot, `"hard"` `(1 - x)^p` or `"variance"` `x (1 - x)`, mixed with `epsilon` uniform exploration. After each generation it adapts: learner win rate above `upper_win_rate` -> hard weighting with a sharper exponent; below `lower_win_rate` -> variance weighting (curriculum of even match-ups). Combined with the runner's PBT exploit/explore. |
+| `adaptive_pbt` | (e) adaptive PFSP: weight `f(x_i)` of the learner's estimated win rate `x_i` against each snapshot, `"hard"` `(1 - x)^p` or `"variance"` `x (1 - x)`, mixed with `epsilon` uniform exploration. The win-rate estimates are kept per sampler, i.e. per population member. After each generation it adapts: learner win rate above `upper_win_rate` -> hard weighting with a sharper exponent; below `lower_win_rate` -> variance weighting (curriculum of even match-ups). Selecting it enables a population of 4 concurrent learners per team with population-based training (see above). |
 
 Sampler arguments are passed with `sampler_kwargs` (CLI: `--sampler-kwargs '{"eta": 0.05, "top_k": 3}'`). New
 strategies are registered with `@register_sampler("name")` on an `OpponentSampler` subclass implementing
@@ -134,6 +151,9 @@ strategies are registered with `@register_sampler("name")` on an `OpponentSample
   local minima (agents learn to get around them; the fields are observations/shaping, not a controller).
 * The obstacle layout is static and shared by all sub-environments.
 * Elo ratings in an asymmetric game mix two populations; use them to rank snapshots *within* a team.
-* PBT is a single-learner exploit/explore against the learner's own history, not a population of concurrent learners.
+* Population members share the vectorized environment: P members each get `num_envs / P` sub-environments, so a
+  larger population means fewer samples per member and generation (raise `num_envs` accordingly).
+* Every member plays the evaluation opponents, so evaluation cost grows linearly with the population size, and each
+  of those matches moves the opponents' Elo ratings.
 * Frozen opponents run one forward pass per distinct sampled snapshot per step; very large pools with many
   distinct opponents in flight get slower (bound it with `pool_max_size` or a focused sampler).

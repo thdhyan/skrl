@@ -80,8 +80,10 @@ def test_hedge_upweights_opponents_beating_the_learner():
 
 def test_adaptive_pbt_prioritizes_hard_opponents_and_adapts():
     pool = make_pool()
-    pool.record(torch.tensor([0, 1, 2, 3] * 10), torch.tensor([1.0, 0.0, 1.0, 0.5] * 10))
     sampler = make_sampler("adaptive_pbt", epsilon=0.0)
+    sampler.update(pool, torch.tensor([0, 1, 2, 3] * 10), torch.tensor([1.0, 0.0, 1.0, 0.5] * 10))
+    # the statistics belong to the sampler (one per population member), not to the shared pool
+    assert torch.allclose(make_sampler("adaptive_pbt").probabilities(pool), torch.full((4,), 0.25, dtype=torch.float64))
     probabilities = sampler.probabilities(pool)
     assert probabilities.argmax() == 1  # the opponent the learner never beats
     exponent = sampler.exponent
@@ -137,12 +139,16 @@ def test_selfplay_smoke(tmp_path, scheme, sampler, algorithm, obs_mode):
         assert [list(record["teams"]) for record in history] == [["pursuers"], ["evader"]]
         assert len(runner.pools["pursuers"]) == len(runner.pools["evader"]) == 2
     else:
+        # adaptive_pbt: population of 2 members per team (capped by the 2 sub-environments of each team)
         assert all(set(record["teams"]) == {"pursuers", "evader"} for record in history)
-        assert len(runner.pools["pursuers"]) == len(runner.pools["evader"]) == 3
+        assert runner.population_size == 2
+        assert len(runner.pools["pursuers"]) == len(runner.pools["evader"]) == 1 + 2 * 2
     for record in history:
         for info in record["teams"].values():
             assert info["eval_win_rate"] and all(0.0 <= v <= 1.0 for v in info["eval_win_rate"].values())
             assert abs(sum(info["opponent_distribution"]) - 1.0) < 1e-2
+            for member in info.get("members", []):
+                assert abs(sum(member["opponent_distribution"]) - 1.0) < 1e-2
     # the learner's weights actually changed and snapshots are frozen copies
     learner = next(iter(runner.learners.values()))
     team = next(iter(runner.learners))
@@ -154,3 +160,78 @@ def test_selfplay_smoke(tmp_path, scheme, sampler, algorithm, obs_mode):
     assert os.path.exists(tmp_path / "history.json")
     assert len(json.load(open(tmp_path / "history.json"))) == 2
     assert any(name.endswith(".pt") for name in os.listdir(tmp_path))
+
+
+def make_population_runner(**overrides) -> SelfPlayRunner:
+    env = PursuitEvasionEnv(num_envs=8, height=6, width=6, num_pursuers=2, max_steps=12, device="cpu", seed=0)
+    cfg = dict(
+        generations=2,
+        timesteps_per_generation=16,
+        sampler="adaptive_pbt",
+        population_size=4,
+        eval_episodes=4,
+        hidden_sizes=(16,),
+        agent_cfg={"rollouts": 8, "learning_epochs": 1, "mini_batches": 1},
+        seed=0,
+        verbose=False,
+    )
+    cfg.update(overrides)
+    return SelfPlayRunner(env, SelfPlayCfg(**cfg))
+
+
+def test_population_members_are_independent_learners():
+    runner = make_population_runner()
+    for team, members in runner.members.items():
+        assert len(members) == 4
+        # disjoint, contiguous sub-environment slices covering the team's span
+        assert [(m.start, m.stop) for m in members] == [(0, 2), (2, 4), (4, 6), (6, 8)]
+        learners = [m.learner for m in members]
+        assert len({id(learner) for learner in learners}) == 4
+        assert len({id(m.sampler) for m in members}) == 4
+        uid = runner.teams[team][0]
+        assert len({id(learner.policies[uid]) for learner in learners}) == 4
+        # diversified initial hyper-parameters (member 0 keeps the configured ones)
+        rates = [runner._hyperparameters(m)["learning_rate"] for m in members]
+        assert rates[0] == runner.agent_cfg["learning_rate"] and len(set(rates)) == 4
+
+    history = runner.run()
+    record = history[0]["teams"]["pursuers"]
+    assert len(record["members"]) == 4 and record["best_member"] in range(4)
+    assert sum(member["train_games"] for member in record["members"]) == record["train_games"]
+    best = max(record["members"], key=lambda m: m["eval_score"])
+    assert record["eval_win_rate"] == best["eval_win_rate"]
+    # truncation selection ran on the bottom member (25% of 4)
+    assert sum("pbt" in member for member in record["members"]) == 1
+    # every member is snapshotted, the generation's strongest last
+    pool = runner.pools["pursuers"]
+    assert len(pool) == 1 + 4
+    assert pool[-1].metadata["member"] == record["best_member"]
+    assert runner.learners["pursuers"] is runner.members["pursuers"][record["best_member"]].learner
+
+
+def test_population_exploit_copies_weights_hyperparameters_and_sampler():
+    runner = make_population_runner(pbt_margin=0.0)
+    source, target = runner.members["pursuers"][0], runner.members["pursuers"][3]
+    source.rating = 1234.0
+    source.sampler.update(runner.pools["evader"], torch.tensor([0]), torch.tensor([1.0]))
+    scores = {0: 1.0, 1: 0.6, 2: 0.4, 3: 0.0}
+    events = runner._pbt_population("pursuers", scores, ranking=[3, 2, 1, 0])
+    assert len(events) == 1 and events[0]["member"] == 3 and events[0]["exploit_from_member"] == 0
+    uid = runner.teams["pursuers"][0]
+    for key, value in source.learner.policies[uid].state_dict().items():
+        assert torch.equal(value, target.learner.policies[uid].state_dict()[key])
+    assert target.rating == 1234.0
+    assert target.sampler is not source.sampler and target.sampler.win_rates == source.sampler.win_rates
+    # explore: perturbed by one of the factors relative to the source
+    factor = events[0]["explore"]["learning_rate_factor"]
+    expected = runner._hyperparameters(source)["learning_rate"] * factor
+    assert abs(runner._hyperparameters(target)["learning_rate"] - expected) < 1e-12
+
+
+def test_population_options():
+    runner = make_population_runner(population_snapshots="best", generations=1)
+    runner.run()
+    assert len(runner.pools["pursuers"]) == 2
+    assert make_population_runner(sampler="uniform", population_size=None).population_size == 1
+    with pytest.raises(ValueError):
+        make_population_runner(population_size=9)

@@ -2,24 +2,36 @@
 
 Each team (e.g. ``"pursuers"`` and ``"evader"``) has
 
-* a **learner**: a skrl :class:`~skrl.multi_agents.torch.mappo.MAPPO` or :class:`~skrl.multi_agents.torch.ippo.IPPO`
-  instance controlling the team's agents, and
-* an **opponent pool**: frozen snapshots of the team's policies, one per generation (generation 0 being the initial,
-  untrained policies), each with an Elo rating.
+* a **population of learners** (``population_size`` members, 1 by default and 4 by default for the
+  ``"adaptive_pbt"`` sampler): independent skrl :class:`~skrl.multi_agents.torch.mappo.MAPPO` or
+  :class:`~skrl.multi_agents.torch.ippo.IPPO` instances controlling the team's agents, each with its own weights,
+  optimizer, hyper-parameters (learning rate and entropy coefficient) and opponent sampler. The members train
+  concurrently: the team's sub-environments are split evenly among them, and
+* an **opponent pool**: frozen snapshots of the team's policies, added every generation the team learns
+  (generation 0 being the initial, untrained policies), each with an Elo rating.
 
 Every generation:
 
-1. **Train** the learning team(s) for ``timesteps_per_generation`` environment steps. Each sub-environment plays
-   against an opponent snapshot drawn from the other team's pool by the configured sampler; a new opponent is drawn
-   for a sub-environment whenever its episode ends (per-episode opponent sampling). Game outcomes feed the pool
-   statistics and adaptive samplers.
-2. **Evaluate** the learner against (up to ``eval_max_opponents``) snapshots of the opposing pool -- the most recent
-   ones plus the best-rated one -- and update the Elo ratings.
-3. **Snapshot** the learner into its own pool (with its rating and evaluation metadata).
-4. Optionally perform **population-based exploit/explore** (``pbt``): the best-rated snapshot of the learner's own
-   pool is evaluated against the same opponents; if the new snapshot scores clearly worse (``pbt_margin``), the learner
-   restarts from the best snapshot's weights (exploit) and its learning rate and entropy coefficient are randomly
-   perturbed (explore).
+1. **Train** every member of the learning team(s) for ``timesteps_per_generation`` environment steps on its own
+   sub-environments. Each sub-environment plays against an opponent snapshot drawn from the other team's pool by the
+   member's sampler; a new opponent is drawn for a sub-environment whenever its episode ends (per-episode opponent
+   sampling). Game outcomes feed the pool statistics and the member's (adaptive) sampler.
+2. **Evaluate** every member against the same (up to ``eval_max_opponents``) snapshots of the opposing pool -- the
+   most recent ones plus the best-rated one -- and update the Elo ratings.
+3. **Snapshot** the members into their team's pool (all of them, or only the best one, see
+   ``population_snapshots``), in increasing order of evaluation score so the generation's strongest member is the
+   pool's latest entry.
+4. Optionally perform **population-based training** (``pbt``):
+
+   * population (``population_size > 1``): truncation selection. Members are ranked by their mean evaluation score
+     (comparable since all members play the same opponents). Each member of the bottom ``pbt_truncation`` fraction
+     that scores more than ``pbt_margin`` below a randomly chosen member of the top fraction copies that member's
+     weights, optimizer state, hyper-parameters, rating and sampler statistics (exploit), then randomly perturbs its
+     learning rate and entropy coefficient by one of ``pbt_perturb_factors`` (explore). The members' initial
+     hyper-parameters are spread log-uniformly over ``pbt_init_range`` around the configured values.
+   * single learner: the best-rated snapshot of the learner's own pool is evaluated against the same opponents; if
+     the new snapshot scores clearly worse, the learner restarts from it (exploit) and perturbs its hyper-parameters
+     (explore).
 
 Training schemes:
 
@@ -103,13 +115,24 @@ class SelfPlayCfg:
     """Elo rating of the generation-0 snapshots."""
     pool_max_size: int | None = None
     """Maximum snapshots per pool (unbounded if None)."""
+    population_size: int | None = None
+    """Concurrent learners per learning team (default: 4 for the ``"adaptive_pbt"`` sampler -- capped by the number
+    of sub-environments the team trains on -- and 1 otherwise). The team's sub-environments are split among them."""
+    population_snapshots: str = "all"
+    """Members added to the team's pool every generation: ``"all"`` or ``"best"`` (highest evaluation score)."""
     pbt: bool | None = None
-    """Population-based exploit/explore of the learner (default: enabled only for the ``"adaptive_pbt"`` sampler)."""
+    """Population-based training (default: enabled only for the ``"adaptive_pbt"`` sampler)."""
+    pbt_truncation: float = 0.25
+    """Fraction of the population replaced (bottom) and copied from (top) by truncation selection (at least one
+    member each when the population has at least 2 members)."""
     pbt_margin: float = 0.1
-    """Exploit when the new snapshot's mean evaluation score is more than this below the score of the best-rated
-    snapshot of its own pool, both evaluated against the same opponents."""
+    """Exploit only when the member's mean evaluation score is more than this below the score of the member it
+    would copy (single learner: below the best-rated snapshot of its own pool, evaluated on the same opponents)."""
     pbt_perturb_factors: tuple[float, float] = (0.8, 1.25)
     """Multiplicative factors randomly applied to the learning rate and entropy coefficient on explore."""
+    pbt_init_range: tuple[float, float] = (0.5, 2.0)
+    """Range of the log-uniform factors applied to the initial learning rate and entropy coefficient of the
+    population members (except member 0, which keeps the configured values)."""
     seed: int | None = None
     """Seed of the runner's random generators (opponent sampling and PBT perturbations)."""
     checkpoint_dir: str | None = None
@@ -119,12 +142,17 @@ class SelfPlayCfg:
 
 
 @dataclasses.dataclass
-class _Assignment:
-    """A learning team and the slice of sub-environments it trains on."""
+class _Member:
+    """One learner of a team's population and the slice of sub-environments it trains on."""
 
     team: str
+    index: int
+    learner: Any
+    sampler: OpponentSampler
     start: int
     stop: int
+    rating: float = 1000.0
+    timesteps: int = 0
 
     @property
     def slice(self) -> slice:
@@ -180,6 +208,8 @@ class SelfPlayRunner:
             torch.manual_seed(cfg.seed)
 
         self.pbt = cfg.pbt if cfg.pbt is not None else cfg.sampler == "adaptive_pbt"
+        if cfg.population_snapshots not in ("all", "best"):
+            raise ValueError(f"Unknown population_snapshots: {cfg.population_snapshots}")
         self.agent_cfg = self._merge_agent_cfg(cfg.agent_cfg)
 
         # environment slices per learning team
@@ -192,22 +222,41 @@ class SelfPlayRunner:
         else:
             spans = {team: (0, self.num_envs) for team in self.learning_teams}
         self._spans = spans
+        self.population_size = self._resolve_population_size(min(stop - start for start, stop in spans.values()))
 
-        # learners, pools and samplers (one sampler per pool: it chooses opponents from that pool)
-        self.learners = {team: self._build_learner(team, *spans[team]) for team in self.learning_teams}
+        # populations of learners (each with its own sampler choosing opponents from the other team's pool) and pools
+        self.members: dict[str, list[_Member]] = {}
+        for team in self.learning_teams:
+            start, stop = spans[team]
+            bounds = [start + (stop - start) * i // self.population_size for i in range(self.population_size + 1)]
+            self.members[team] = [
+                _Member(
+                    team=team,
+                    index=i,
+                    learner=self._build_learner(team, bounds[i], bounds[i + 1], i),
+                    sampler=make_sampler(cfg.sampler, **cfg.sampler_kwargs),
+                    start=bounds[i],
+                    stop=bounds[i + 1],
+                    rating=cfg.initial_rating,
+                )
+                for i in range(self.population_size)
+            ]
+            if self.pbt and self.population_size > 1:
+                low, high = (math.log(f) for f in cfg.pbt_init_range)
+                for member in self.members[team][1:]:
+                    self._scale_hyperparameters(
+                        member, math.exp(self._rng.uniform(low, high)), math.exp(self._rng.uniform(low, high))
+                    )
+        self.best_member = {team: 0 for team in self.learning_teams}
         self.pools = {team: OpponentPool(team, uids, max_size=cfg.pool_max_size) for team, uids in self.teams.items()}
-        self.samplers: dict[str, OpponentSampler] = {
-            team: make_sampler(cfg.sampler, **cfg.sampler_kwargs) for team in self.teams
-        }
-        self._timesteps = {team: 0 for team in self.learning_teams}
         self._total_timesteps = cfg.generations * cfg.timesteps_per_generation
         self.history: list[dict[str, Any]] = []
         self.generation = 0
 
-        # generation 0: initial policies
+        # generation 0: initial policies (of the first member: all initial policies are untrained)
         for team in self.teams:
-            if team in self.learners:
-                policies, values = self._learner_state(team)
+            if team in self.members:
+                policies, values = self._learner_state(self.members[team][0])
             else:
                 policies = {uid: clone_state_dict(self._make_policy(uid)) for uid in self.teams[team]}
                 values = {}
@@ -218,6 +267,26 @@ class SelfPlayRunner:
     # ------------------------------------------------------------------
     # construction helpers
     # ------------------------------------------------------------------
+
+    @property
+    def learners(self) -> dict[str, Any]:
+        """Learner of each learning team (the member with the best evaluation score in the last generation)."""
+        return {team: members[self.best_member[team]].learner for team, members in self.members.items()}
+
+    def _resolve_population_size(self, max_size: int) -> int:
+        size = self.cfg.population_size
+        if size is None:
+            size = 4 if self.cfg.sampler == "adaptive_pbt" else 1
+            if size > max_size:
+                logger.warning(f"Population size reduced from {size} to {max_size} (one sub-environment per member)")
+                size = max_size
+        if size < 1:
+            raise ValueError(f"The population size must be positive, got {size}")
+        if size > max_size:
+            raise ValueError(
+                f"Population size {size} exceeds the {max_size} sub-environments available per learning team"
+            )
+        return size
 
     @staticmethod
     def _merge_agent_cfg(overrides: dict) -> dict:
@@ -248,7 +317,7 @@ class SelfPlayRunner:
             use_states=self.cfg.algorithm == "mappo",
         )
 
-    def _build_learner(self, team: str, start: int, stop: int):
+    def _build_learner(self, team: str, start: int, stop: int, index: int = 0):
         uids = self.teams[team]
         models = {uid: {"policy": self._make_policy(uid), "value": self._make_value(uid)} for uid in uids}
         memories = {
@@ -258,7 +327,9 @@ class SelfPlayRunner:
         agent_cfg = copy.deepcopy(self.agent_cfg)
         if self.cfg.checkpoint_dir and not agent_cfg["experiment"].get("directory"):
             agent_cfg["experiment"]["directory"] = os.path.join(self.cfg.checkpoint_dir, "agents")
-        agent_cfg["experiment"].setdefault("experiment_name", team)
+        agent_cfg["experiment"].setdefault(
+            "experiment_name", team if self.population_size == 1 else f"{team}_member{index}"
+        )
         kwargs = dict(
             possible_agents=uids,
             models=models,
@@ -280,14 +351,14 @@ class SelfPlayRunner:
         agent.init(trainer_cfg=SequentialTrainerCfg(timesteps=self.cfg.generations * self.cfg.timesteps_per_generation))
         return agent
 
-    def _learner_state(self, team: str) -> tuple[dict, dict]:
-        learner = self.learners[team]
-        policies = {uid: clone_state_dict(learner.policies[uid]) for uid in self.teams[team]}
-        values = {uid: clone_state_dict(learner.values[uid]) for uid in self.teams[team]}
+    def _learner_state(self, member: _Member) -> tuple[dict, dict]:
+        learner = member.learner
+        policies = {uid: clone_state_dict(learner.policies[uid]) for uid in self.teams[member.team]}
+        values = {uid: clone_state_dict(learner.values[uid]) for uid in self.teams[member.team]}
         return policies, values
 
-    def _reset_learner_rollout(self, team: str) -> None:
-        learner = self.learners[team]
+    def _reset_learner_rollout(self, member: _Member) -> None:
+        learner = member.learner
         for memory in learner.memories.values():
             memory.reset()
         learner._rollout = 0
@@ -353,28 +424,30 @@ class SelfPlayRunner:
     # training / evaluation
     # ------------------------------------------------------------------
 
-    def _assignments(self, generation: int) -> list[_Assignment]:
+    def _learning_teams_of(self, generation: int) -> list[str]:
         if self.simultaneous:
-            return [_Assignment(team, *self._spans[team]) for team in self.learning_teams]
+            return list(self.learning_teams)
         if len(self.learning_teams) == 1:
-            team = self.learning_teams[0]
-        else:
-            order = [self.cfg.first_learner, self.opponent_of[self.cfg.first_learner]]
-            team = order[(generation - 1) % 2]
-        return [_Assignment(team, *self._spans[team])]
+            return [self.learning_teams[0]]
+        order = [self.cfg.first_learner, self.opponent_of[self.cfg.first_learner]]
+        return [order[(generation - 1) % 2]]
 
-    def train_generation(self, assignments: list[_Assignment]) -> dict[str, dict[str, Any]]:
-        """Train the learners of the given assignments for ``timesteps_per_generation`` steps."""
+    def train_generation(self, teams: list[str]) -> dict[tuple[str, int], dict[str, Any]]:
+        """Train every population member of the given teams for ``timesteps_per_generation`` steps.
+
+        :return: Training statistics keyed by ``(team, member index)``.
+        """
         cfg = self.cfg
         first_uid = self.env.possible_agents[0]
-        stats = {a.team: {"games": 0, "wins": 0.0, "opponents": {}} for a in assignments}
+        assignments = [member for team in teams for member in self.members[team]]
+        stats = {(a.team, a.index): {"games": 0, "wins": 0.0, "opponents": {}} for a in assignments}
 
         opponent_indices = {}
         for a in assignments:
-            self._reset_learner_rollout(a.team)
-            self.learners[a.team].enable_training_mode(True)
+            self._reset_learner_rollout(a)
+            a.learner.enable_training_mode(True)
             opponent = self.opponent_of[a.team]
-            opponent_indices[a.team] = self.samplers[opponent].sample(self.pools[opponent], a.size, self._generator)
+            opponent_indices[a.team, a.index] = a.sampler.sample(self.pools[opponent], a.size, self._generator)
 
         observations, infos = self.env.reset()
         states = self.env.state()
@@ -382,25 +455,25 @@ class SelfPlayRunner:
             actions = self._empty_actions()
             with torch.no_grad():
                 for a in assignments:
-                    learner, uids, sl = self.learners[a.team], self.teams[a.team], a.slice
-                    learner.pre_interaction(timestep=self._timesteps[a.team], timesteps=self._total_timesteps)
+                    learner, uids, sl = a.learner, self.teams[a.team], a.slice
+                    learner.pre_interaction(timestep=a.timesteps, timesteps=self._total_timesteps)
                     learner_actions, _ = learner.act(
                         {uid: observations[uid][sl] for uid in uids},
                         {uid: states[uid][sl] for uid in uids},
-                        timestep=self._timesteps[a.team],
+                        timestep=a.timesteps,
                         timesteps=self._total_timesteps,
                     )
                     for uid in uids:
                         actions[uid][sl] = learner_actions[uid].view(-1, 1).long()
                     self._opponent_actions(
-                        self.opponent_of[a.team], opponent_indices[a.team], observations, states, sl, actions
+                        self.opponent_of[a.team], opponent_indices[a.team, a.index], observations, states, sl, actions
                     )
 
                 next_observations, rewards, terminated, truncated, infos = self.env.step(actions)
                 next_states = self.env.state()
 
                 for a in assignments:
-                    learner, uids, sl = self.learners[a.team], self.teams[a.team], a.slice
+                    learner, uids, sl = a.learner, self.teams[a.team], a.slice
                     learner.record_transition(
                         observations={uid: observations[uid][sl] for uid in uids},
                         states={uid: states[uid][sl] for uid in uids},
@@ -411,44 +484,39 @@ class SelfPlayRunner:
                         terminated={uid: terminated[uid][sl] for uid in uids},
                         truncated={uid: truncated[uid][sl] for uid in uids},
                         infos=infos,
-                        timestep=self._timesteps[a.team],
+                        timestep=a.timesteps,
                         timesteps=self._total_timesteps,
                     )
 
             for a in assignments:
-                self.learners[a.team].post_interaction(
-                    timestep=self._timesteps[a.team], timesteps=self._total_timesteps
-                )
-                self._timesteps[a.team] += 1
+                a.learner.post_interaction(timestep=a.timesteps, timesteps=self._total_timesteps)
+                a.timesteps += 1
 
                 # bookkeeping of finished games and per-episode opponent resampling
                 term = terminated[first_uid][a.slice].view(-1)
                 done = (term | truncated[first_uid][a.slice].view(-1)).cpu()
                 if done.any():
                     opponent = self.opponent_of[a.team]
-                    pool, sampler = self.pools[opponent], self.samplers[opponent]
-                    indices = opponent_indices[a.team][done]
+                    pool, sampler, key = self.pools[opponent], a.sampler, (a.team, a.index)
+                    indices = opponent_indices[key][done]
                     scores = self._learner_scores(a.team, term.cpu(), done)
                     pool.record(indices, scores)
                     sampler.update(pool, indices, scores)
-                    opponent_indices[a.team][done] = sampler.sample(pool, int(done.sum()), self._generator)
-                    stats[a.team]["games"] += int(done.sum())
-                    stats[a.team]["wins"] += float(scores.sum())
+                    opponent_indices[key][done] = sampler.sample(pool, int(done.sum()), self._generator)
+                    stats[key]["games"] += int(done.sum())
+                    stats[key]["wins"] += float(scores.sum())
                     for index, score in zip(indices.tolist(), scores.tolist()):
-                        generation = pool[index].generation
-                        entry = stats[a.team]["opponents"].setdefault(generation, [0, 0.0])
+                        entry = stats[key]["opponents"].setdefault(self._entry_label(pool[index]), [0, 0.0])
                         entry[0] += 1
                         entry[1] += score
 
             observations, states = next_observations, next_states
 
         for a in assignments:
-            self.learners[a.team].enable_training_mode(False)
-            games = stats[a.team]["games"]
-            stats[a.team]["win_rate"] = stats[a.team]["wins"] / games if games else None
-            stats[a.team]["opponents"] = {
-                g: round(w / n, 3) for g, (n, w) in sorted(stats[a.team]["opponents"].items())
-            }
+            a.learner.enable_training_mode(False)
+            entry = stats[a.team, a.index]
+            entry["win_rate"] = entry["wins"] / entry["games"] if entry["games"] else None
+            entry["opponents"] = dict(sorted(entry["opponents"].items(), key=lambda item: str(item[0])))
         return stats
 
     @torch.no_grad()
@@ -496,83 +564,162 @@ class SelfPlayRunner:
         indices.add(pool.best_index())
         return sorted(indices)
 
-    def evaluate_and_snapshot(self, team: str, generation: int) -> dict[str, Any]:
-        """Evaluate the learner of ``team``, rate it, add its snapshot to the pool and apply PBT (if enabled)."""
+    def evaluate(self, member: _Member) -> dict[int, float]:
+        """Evaluate a population member against the evaluation opponents and update the Elo ratings.
+
+        :return: Mean score of the member per opponent (keyed by :meth:`_entry_label`).
+        """
         cfg = self.cfg
-        learner = self.learners[team]
-        own_pool, opponent_pool = self.pools[team], self.pools[self.opponent_of[team]]
-        policies = {uid: learner.policies[uid] for uid in self.teams[team]}
+        opponent_pool = self.pools[self.opponent_of[member.team]]
+        policies = {uid: member.learner.policies[uid] for uid in self.teams[member.team]}
         for model in policies.values():
             model.eval()
-
-        rating = own_pool[-1].rating  # start from the previous snapshot's rating
         evaluation = {}
         for index in self._evaluation_opponents(opponent_pool):
-            score = self.play(team, policies, index, cfg.eval_episodes, cfg.eval_deterministic)
+            score = self.play(member.team, policies, index, cfg.eval_episodes, cfg.eval_deterministic)
             opponent_entry = opponent_pool[index]
-            rating, opponent_entry.rating = elo_update(rating, opponent_entry.rating, score, cfg.elo_k)
-            evaluation[opponent_entry.generation] = round(score, 3)
+            member.rating, opponent_entry.rating = elo_update(member.rating, opponent_entry.rating, score, cfg.elo_k)
+            evaluation[self._entry_label(opponent_entry)] = round(score, 3)
+        return evaluation
 
-        policy_states, value_states = self._learner_state(team)
-        snapshot = PolicySnapshot(
-            team=team,
-            generation=generation,
-            policies=policy_states,
-            values=value_states,
-            rating=rating,
-            metadata={"eval_win_rate": evaluation, "hyperparameters": self._hyperparameters(team)},
-        )
-        result: dict[str, Any] = {"eval_win_rate": evaluation, "rating": round(rating, 1)}
+    def evaluate_and_snapshot(self, team: str, generation: int) -> dict[str, Any]:
+        """Evaluate the population of ``team``, add its snapshot(s) to the pool and apply PBT (if enabled)."""
+        cfg = self.cfg
+        members = self.members[team]
+        own_pool = self.pools[team]
+        evaluations = {member.index: self.evaluate(member) for member in members}
+        scores = {i: sum(e.values()) / len(e) for i, e in evaluations.items()}
+        ranking = sorted(scores, key=lambda i: (scores[i], members[i].rating))  # ascending
+        best = ranking[-1]
+        self.best_member[team] = best
 
-        if self.pbt and len(own_pool) > 1:
-            # exploit/explore: compare the new snapshot head-to-head with the best-rated snapshot of its own pool on
-            # the same opponents (Elo alone is not comparable across snapshots rated against different opponents)
-            best = own_pool[own_pool.best_index()]
-            if best.values:
-                best_policies = own_pool.policies(own_pool.best_index(), self._make_policy)
-                best_scores = [
-                    self.play(team, best_policies, index, cfg.eval_episodes, cfg.eval_deterministic)
-                    for index in self._evaluation_opponents(opponent_pool)
-                ]
-                new_score = sum(evaluation.values()) / len(evaluation)
-                best_score = sum(best_scores) / len(best_scores)
-                result["pbt"] = {"score": round(new_score, 3), "best_generation": best.generation}
-                result["pbt"]["best_score"] = round(best_score, 3)
-                if new_score < best_score - cfg.pbt_margin:
-                    self._load_learner(team, best)
-                    result["pbt"]["exploit_from_generation"] = best.generation
-                    result["pbt"]["explore"] = self._perturb_hyperparameters(team)
-                snapshot.metadata["pbt"] = result["pbt"]
+        results: dict[int, dict[str, Any]] = {}
+        snapshots: dict[int, PolicySnapshot] = {}
+        for member in members:
+            policy_states, value_states = self._learner_state(member)
+            snapshots[member.index] = PolicySnapshot(
+                team=team,
+                generation=generation,
+                policies=policy_states,
+                values=value_states,
+                rating=member.rating,
+                metadata={
+                    "eval_win_rate": evaluations[member.index],
+                    "hyperparameters": self._hyperparameters(member),
+                },
+            )
+            if len(members) > 1:
+                snapshots[member.index].metadata["member"] = member.index
+            results[member.index] = {
+                "eval_win_rate": evaluations[member.index],
+                "eval_score": round(scores[member.index], 3),
+                "rating": round(member.rating, 1),
+                "hyperparameters": snapshots[member.index].metadata["hyperparameters"],
+            }
 
-        own_pool.add(snapshot)
-        if cfg.checkpoint_dir:
-            os.makedirs(cfg.checkpoint_dir, exist_ok=True)
-            torch.save(dataclasses.asdict(snapshot), os.path.join(cfg.checkpoint_dir, f"{team}_gen{generation:03d}.pt"))
-        return result
+        if self.pbt and len(members) > 1:
+            for event in self._pbt_population(team, scores, ranking):
+                results[event["member"]]["pbt"] = event
+                snapshots[event["member"]].metadata["pbt"] = event
+        elif self.pbt and len(own_pool) > 1:
+            event = self._pbt_single(members[0], scores[0])
+            if event is not None:
+                results[0]["pbt"] = event
+                snapshots[0].metadata["pbt"] = event
 
-    def _hyperparameters(self, team: str) -> dict[str, float]:
-        learner = self.learners[team]
-        uid = self.teams[team][0]
+        # add to the pool in increasing order of score: the generation's strongest member is the latest entry
+        for i in ranking if cfg.population_snapshots == "all" else [best]:
+            own_pool.add(snapshots[i])
+            if cfg.checkpoint_dir:
+                os.makedirs(cfg.checkpoint_dir, exist_ok=True)
+                suffix = "" if len(members) == 1 else f"_member{i}"
+                path = os.path.join(cfg.checkpoint_dir, f"{team}_gen{generation:03d}{suffix}.pt")
+                torch.save(dataclasses.asdict(snapshots[i]), path)
+        return {"best_member": best, "members": results}
+
+    def _pbt_population(self, team: str, scores: dict[int, float], ranking: list[int]) -> list[dict[str, Any]]:
+        """Truncation selection: the bottom members exploit (copy) a top member, then explore (perturb)."""
+        cfg = self.cfg
+        members = self.members[team]
+        count = min(max(1, int(len(members) * cfg.pbt_truncation)), len(members) // 2)
+        top, bottom = ranking[-count:], ranking[:count]
+        events = []
+        for i in bottom:
+            source = self._rng.choice(top)
+            event: dict[str, Any] = {
+                "member": i,
+                "score": round(scores[i], 3),
+                "source_member": source,
+                "source_score": round(scores[source], 3),
+            }
+            if scores[i] < scores[source] - cfg.pbt_margin:
+                self._copy_member(members[source], members[i])
+                event["exploit_from_member"] = source
+                event["explore"] = self._perturb_hyperparameters(members[i])
+            events.append(event)
+        return events
+
+    def _pbt_single(self, member: _Member, score: float) -> dict[str, Any] | None:
+        """Single learner: compare head-to-head with the best-rated snapshot of its own pool on the same opponents
+        (Elo alone is not comparable across snapshots rated against different opponents)."""
+        cfg = self.cfg
+        own_pool, opponent_pool = self.pools[member.team], self.pools[self.opponent_of[member.team]]
+        best = own_pool[own_pool.best_index()]
+        if not best.values:
+            return None
+        best_policies = own_pool.policies(own_pool.best_index(), self._make_policy)
+        best_scores = [
+            self.play(member.team, best_policies, index, cfg.eval_episodes, cfg.eval_deterministic)
+            for index in self._evaluation_opponents(opponent_pool)
+        ]
+        best_score = sum(best_scores) / len(best_scores)
+        event = {"score": round(score, 3), "best_generation": best.generation, "best_score": round(best_score, 3)}
+        if score < best_score - cfg.pbt_margin:
+            self._load_learner(member, best)
+            event["exploit_from_generation"] = best.generation
+            event["explore"] = self._perturb_hyperparameters(member)
+        return event
+
+    def _hyperparameters(self, member: _Member) -> dict[str, float]:
+        learner = member.learner
+        uid = self.teams[member.team][0]
         return {
             "learning_rate": learner.optimizers[uid].param_groups[0]["lr"],
             "entropy_loss_scale": learner.cfg.entropy_loss_scale[uid],
         }
 
-    def _load_learner(self, team: str, snapshot: PolicySnapshot) -> None:
-        learner = self.learners[team]
-        for uid in self.teams[team]:
-            learner.policies[uid].load_state_dict(snapshot.policies[uid])
-            learner.values[uid].load_state_dict(snapshot.values[uid])
+    def _load_learner(self, member: _Member, snapshot: PolicySnapshot) -> None:
+        for uid in self.teams[member.team]:
+            member.learner.policies[uid].load_state_dict(snapshot.policies[uid])
+            member.learner.values[uid].load_state_dict(snapshot.values[uid])
 
-    def _perturb_hyperparameters(self, team: str) -> dict[str, float]:
-        learner = self.learners[team]
+    def _copy_member(self, source: _Member, target: _Member) -> None:
+        """Exploit: copy weights, optimizer state (including the learning rate), preprocessors, entropy coefficient,
+        rating and sampler statistics of ``source`` into ``target``."""
+        src, dst = source.learner, target.learner
+        for uid in self.teams[target.team]:
+            dst.policies[uid].load_state_dict(src.policies[uid].state_dict())
+            dst.values[uid].load_state_dict(src.values[uid].state_dict())
+            dst.optimizers[uid].load_state_dict(copy.deepcopy(src.optimizers[uid].state_dict()))
+            dst.cfg.entropy_loss_scale[uid] = src.cfg.entropy_loss_scale[uid]
+            for name in ("_observation_preprocessor", "_state_preprocessor", "_value_preprocessor"):
+                preprocessor = getattr(src, name, {}).get(uid)
+                if isinstance(preprocessor, torch.nn.Module):
+                    getattr(dst, name)[uid].load_state_dict(preprocessor.state_dict())
+        target.rating = source.rating
+        target.sampler = copy.deepcopy(source.sampler)
+
+    def _scale_hyperparameters(self, member: _Member, lr_factor: float, entropy_factor: float) -> None:
+        for uid in self.teams[member.team]:
+            for group in member.learner.optimizers[uid].param_groups:
+                group["lr"] *= lr_factor
+            member.learner.cfg.entropy_loss_scale[uid] *= entropy_factor
+
+    def _perturb_hyperparameters(self, member: _Member) -> dict[str, float]:
         lr_factor = self._rng.choice(self.cfg.pbt_perturb_factors)
         entropy_factor = self._rng.choice(self.cfg.pbt_perturb_factors)
-        for uid in self.teams[team]:
-            for group in learner.optimizers[uid].param_groups:
-                group["lr"] *= lr_factor
-            learner.cfg.entropy_loss_scale[uid] *= entropy_factor
-        return {"learning_rate_factor": lr_factor, "entropy_factor": entropy_factor, **self._hyperparameters(team)}
+        self._scale_hyperparameters(member, lr_factor, entropy_factor)
+        return {"learning_rate_factor": lr_factor, "entropy_factor": entropy_factor, **self._hyperparameters(member)}
 
     # ------------------------------------------------------------------
     # main loop
@@ -589,24 +736,64 @@ class SelfPlayRunner:
         for _ in range(generations):
             self.generation += 1
             start = time.perf_counter()
-            assignments = self._assignments(self.generation)
-            train_stats = self.train_generation(assignments)
+            teams = self._learning_teams_of(self.generation)
+            train_stats = self.train_generation(teams)
             record: dict[str, Any] = {"generation": self.generation, "teams": {}}
-            for a in assignments:
-                opponent = self.opponent_of[a.team]
-                sampler = self.samplers[opponent]
-                sampler.on_generation_end(self.pools[opponent], train_stats[a.team]["win_rate"])
-                result = self.evaluate_and_snapshot(a.team, self.generation)
-                record["teams"][a.team] = {
-                    "train_games": train_stats[a.team]["games"],
-                    "train_win_rate": train_stats[a.team]["win_rate"],
-                    "train_win_rate_by_opponent": train_stats[a.team]["opponents"],
-                    **result,
-                    "opponent_distribution": [round(float(p), 3) for p in sampler.probabilities(self.pools[opponent])],
-                    "sampler_state": sampler.state(),
+            for team in teams:
+                opponent_pool = self.pools[self.opponent_of[team]]
+                for member in self.members[team]:
+                    member.sampler.on_generation_end(opponent_pool, train_stats[team, member.index]["win_rate"])
+                # sampler distributions are logged before PBT (which may replace a member's sampler)
+                distributions = {
+                    member.index: (
+                        [round(float(p), 3) for p in member.sampler.probabilities(opponent_pool)],
+                        member.sampler.state(),
+                    )
+                    for member in self.members[team]
                 }
+                result = self.evaluate_and_snapshot(team, self.generation)
+                best = result["best_member"]
+                members = []
+                for i, info in result["members"].items():
+                    stats = train_stats[team, i]
+                    members.append(
+                        {
+                            "member": i,
+                            "train_games": stats["games"],
+                            "train_win_rate": stats["win_rate"],
+                            "opponent_distribution": distributions[i][0],
+                            **info,
+                        }
+                    )
+                # team summary: training statistics over the whole population, evaluation of its best member
+                games = sum(train_stats[team, i]["games"] for i in result["members"])
+                wins = sum(train_stats[team, i]["wins"] for i in result["members"])
+                by_opponent: dict[int | str, list[float]] = {}
+                for i in result["members"]:
+                    for label, (n, w) in train_stats[team, i]["opponents"].items():
+                        entry = by_opponent.setdefault(label, [0, 0.0])
+                        entry[0] += n
+                        entry[1] += w
+                summary = {
+                    "train_games": games,
+                    "train_win_rate": wins / games if games else None,
+                    "train_win_rate_by_opponent": {
+                        label: round(w / n, 3) for label, (n, w) in sorted(by_opponent.items(), key=lambda x: str(x[0]))
+                    },
+                    "eval_win_rate": result["members"][best]["eval_win_rate"],
+                    "rating": result["members"][best]["rating"],
+                    "opponent_distribution": distributions[best][0],
+                    "sampler_state": distributions[best][1],
+                }
+                if len(members) > 1:
+                    summary["best_member"] = best
+                    summary["members"] = members
+                elif "pbt" in result["members"][0]:
+                    summary["pbt"] = result["members"][0]["pbt"]
+                record["teams"][team] = summary
             record["ratings"] = {
-                team: {entry.generation: round(entry.rating, 1) for entry in pool} for team, pool in self.pools.items()
+                team: {self._entry_label(entry): round(entry.rating, 1) for entry in pool}
+                for team, pool in self.pools.items()
             }
             record["elapsed_s"] = round(time.perf_counter() - start, 2)
             self.history.append(record)
@@ -620,6 +807,12 @@ class SelfPlayRunner:
                 callback(record)
         return self.history
 
+    @staticmethod
+    def _entry_label(entry: PolicySnapshot) -> str | int:
+        """Generation of a snapshot (``"generation.member"`` for snapshots of a population member)."""
+        member = entry.metadata.get("member")
+        return entry.generation if member is None or entry.generation == 0 else f"{entry.generation}.{member}"
+
     def _log(self, record: dict) -> None:
         lines = [f"[self-play] generation {record['generation']} ({record['elapsed_s']} s)"]
         for team, info in record["teams"].items():
@@ -629,5 +822,17 @@ class SelfPlayRunner:
                 f"({info['train_games']} games) | eval {info['eval_win_rate']} | rating {info['rating']}"
                 + (f" | pbt {info['pbt']}" if "pbt" in info else "")
             )
+            for member in info.get("members", []):
+                hp = member["hyperparameters"]
+                marker = "*" if member["member"] == info["best_member"] else " "
+                lines.append(
+                    f"   {marker}member {member['member']}: score {member['eval_score']:.3f} | rating "
+                    f"{member['rating']} | lr {hp['learning_rate']:.2e} | entropy {hp['entropy_loss_scale']:.3g}"
+                    + (
+                        f" | exploit from {member['pbt']['exploit_from_member']}"
+                        if "exploit_from_member" in member.get("pbt", {})
+                        else ""
+                    )
+                )
             lines.append(f"    opponent distribution: {info['opponent_distribution']} {info['sampler_state']}")
         logger.info("\n".join(lines))

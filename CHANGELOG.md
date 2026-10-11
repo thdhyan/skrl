@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `"pursuit-evasion"` torch multi-agent environment wrapper
 - Generation-based self-play runner with opponent pools, Elo ratings and opponent samplers
   (`last`, `best`, `uniform`, `hedge`, `adaptive_pbt`) in `skrl.multi_agents.torch.selfplay`
+- Populations of concurrent self-play learners per team with population-based training (truncation selection,
+  exploit/explore of weights and hyper-parameters); default for the `adaptive_pbt` sampler
 
 ### Fixed
 - Multi-agent configuration expansion rejecting empty dictionaries (e.g. default `*_kwargs`) as partial per-agent values
