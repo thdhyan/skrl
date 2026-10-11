@@ -1,6 +1,8 @@
-# Tasks — Belief-Based POMDP Manipulation in skrl
+# Tasks — Belief, privileged-curriculum and transformer RL in skrl
 
-> Branch: `feature/belief-pomdp-manipulation`
+> Working branch: `feature/privileged-curriculum` (contains `feature/belief-pomdp-manipulation` and the cloud
+> branch `claude/2d-multiagent-ppo-grid-n4ld8f`, merged 2026-10-11). Plans and ordering: [`plans.md`](plans.md).
+> Test status 2026-10-11: 99 passed (command in `README.md`).
 
 ## 0. Bootstrap ✅
 
@@ -75,7 +77,38 @@
 
 - [x] `skrl/models/torch/transformer.py` — per-dim tokenizer + CLS transformer trunk, Gaussian policy + value.
 - [x] `examples/transformer_mujoco/` — PPO on HalfCheetah-v5 / InvertedPendulum-v5 / InvertedDoublePendulum-v5, `--model {transformer,mlp}`, video.
-- [ ] Long runs (≥1M steps) + multi-seed transformer vs MLP. No triple-pendulum env in gymnasium (custom MJCF needed).
+- [x] Multi-seed benchmark, 3 tasks × 3 seeds (HalfCheetah 1M steps): MLP ≥ transformer on all three. Table in the example README.
+- [x] Fix: `clip_actions=False` (log_prob of clipped actions overflowed the PPO ratio, NaN in 4/18 runs).
+- [ ] Better token design (per GMM component of b̃, or per history time step). No triple-pendulum env in gymnasium (custom MJCF needed).
+
+## 7d. PrivilegedPPO: privileged masking curriculum ✅ (2026-10-10)
+
+- [x] `skrl/agents/torch/privileged_ppo/` — `SoftmaxMaskCurriculum`, encoder z / history estimator ẑ actor, asymmetric critic, `‖sg(z) − ẑ‖² + λ‖z − sg(ẑ)‖²` regularizer.
+- [x] `skrl/envs/wrappers/torch/privileged_history_wrapper.py` — obs `[o_t | history | privileged | mask]`, per-episode mask.
+- [x] `tests/agents/torch/test_privileged_ppo.py` — 7 tests.
+- [x] CartPole POMDP + random pole mass/length sweep, 3 modes × 3 seeds: masked eval curriculum 493, masked-from-start 490, always-visible 118. `docs/privileged_curriculum/`.
+- [ ] Harder task where privileged values are not recoverable from a short history; 5+ seeds.
+- [ ] Per-dimension masking order and soft blending variants.
+- [ ] Isaac Lab: privileged values from the `critic` obs group.
+
+## 7e. Pursuit-evasion self-play + POMDP experiments ✅ (cloud branch, merged 2026-10-11)
+
+- [x] `skrl/envs/pursuit_evasion/` — batched torch 2D grid env, potential fields, obs groups (`full_state`, `global_potential`, `local_potential`).
+- [x] `skrl/multi_agents/torch/selfplay/` — generation-based self-play runner, opponent pools / Elo, samplers.
+- [x] `PomdpWrapper` fixes (multi-dim obs, negative indices, `full_obs` on reset) + `tests/envs/test_pomdp_wrapper.py`.
+- [x] W&B fix: `skrl/utils/tensorboard.py` (no training metrics were synced).
+- [x] `experiments/pomdp_and_obs_groups/` — CartPole full/masked/belief and pursuit obs-group studies (offline W&B).
+- [ ] `wandb sync` the offline runs; decide whether `wandb_offline/` stays in git.
+
+## 7f. Belief markers for visualization (next, see plans.md §1)
+
+The belief is not returned to the sim today: `act()` returns actions + `log_prob`, the wrapper only adds `info["belief_entropy"]`.
+
+- [ ] `BeliefAgentMixin.get_belief_markers()` → particles, weights, GMM hefts / means / log-diag-covs.
+- [ ] `BeliefObservationWrapper`: `info["belief"]` with the same dict.
+- [ ] `state_to_position` hook mapping belief state → 3D marker positions.
+- [ ] Isaac Lab `VisualizationMarkers`: weighted particle spheres + GMM ellipsoids + true-state marker, in the debug video.
+- [ ] Test: markers match `get_particles()` / `gmm` and survive an episode reset.
 
 ## 8. CartPole physics extensions (answered below)
 
