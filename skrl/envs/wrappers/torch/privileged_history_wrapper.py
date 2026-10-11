@@ -31,6 +31,9 @@ class PrivilegedHistoryWrapper(gymnasium.Wrapper):
     :param curriculum: Object with a ``mask_probability()`` method. ``None`` never masks.
     :param randomize_fn: Optional ``randomize_fn(env, rng)`` called before every reset (domain randomization).
     :param seed: RNG seed for the mask draws and ``randomize_fn``.
+    :param include_last_action: Append the previous action ``a_{t-1}`` (zeros at episode start) to ``o_t``, so the
+        history holds observation-action pairs and the estimator can identify dynamics (e.g. mass from the
+        response to a known force). ``D`` then includes the action size. Box action spaces only.
     """
 
     def __init__(
@@ -43,6 +46,7 @@ class PrivilegedHistoryWrapper(gymnasium.Wrapper):
         curriculum=None,
         randomize_fn: Callable[[gymnasium.Env, np.random.Generator], None] | None = None,
         seed: int | None = None,
+        include_last_action: bool = False,
     ) -> None:
         super().__init__(env)
         self._privileged_fn = privileged_fn
@@ -52,6 +56,12 @@ class PrivilegedHistoryWrapper(gymnasium.Wrapper):
         self._rng = np.random.default_rng(seed)
 
         self._obs_dim = int(np.prod(env.observation_space.shape))
+        self._last_action = None
+        if include_last_action:
+            if not isinstance(env.action_space, gymnasium.spaces.Box):
+                raise ValueError("include_last_action needs a Box action space")
+            self._last_action = np.zeros(int(np.prod(env.action_space.shape)), dtype=np.float32)
+            self._obs_dim += self._last_action.size
         self._history = collections.deque(maxlen=history_length)
         self._history_length = history_length
         self._mask = 0.0
@@ -63,6 +73,8 @@ class PrivilegedHistoryWrapper(gymnasium.Wrapper):
         if self._randomize_fn is not None:
             self._randomize_fn(self.env, self._rng)
         obs, info = self.env.reset(**kwargs)
+        if self._last_action is not None:
+            self._last_action[:] = 0.0
         p = self._curriculum.mask_probability() if self._curriculum is not None else 0.0
         self._mask = float(self._rng.random() < p)
         self._history.clear()
@@ -72,12 +84,16 @@ class PrivilegedHistoryWrapper(gymnasium.Wrapper):
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        if self._last_action is not None:
+            self._last_action[:] = np.asarray(action, dtype=np.float32).reshape(-1)
         packed = self._pack(obs)
         info["privileged_mask"] = self._mask
         return packed, reward, terminated, truncated, info
 
     def _pack(self, obs: np.ndarray) -> np.ndarray:
         obs = np.asarray(obs, dtype=np.float32).reshape(-1)
+        if self._last_action is not None:
+            obs = np.concatenate([obs, self._last_action])
         privileged = np.asarray(self._privileged_fn(self.env), dtype=np.float32).reshape(self._privileged_dim)
         packed = np.concatenate([obs, *self._history, privileged, [self._mask]]).astype(np.float32)
         if self._history_length:

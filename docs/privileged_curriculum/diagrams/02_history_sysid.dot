@@ -1,0 +1,26 @@
+digraph history_sysid {
+    rankdir=LR;
+    fontname="Helvetica"; fontsize=13;
+    label="History encoder = online system identification (PrivilegedPPO, ROA-style)"; labelloc=t;
+    node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11];
+    edge [fontname="Helvetica", fontsize=10];
+
+    sim  [label="Simulator\ndomain randomization per episode\n(mass, friction, length scales)", fillcolor="#dbe4f0"];
+    priv [label="Privileged values e_t\nhidden velocities + dynamics", fillcolor="#fde9c9"];
+    hist [label="History o_{t-H..t}\n(velocities hidden, noisy)", fillcolor="#fde9c9"];
+    enc  [label="Encoder μ\ne_t → z", fillcolor="#e3f1e0"];
+    est  [label="History estimator φ\no_{t-H..t} → ẑ\n(online system ID)", fillcolor="#e3f1e0"];
+    gate [label="mask ? ẑ : z\nmask ~ curriculum", shape=diamond, fillcolor="#ffffff"];
+    pol  [label="Policy π(a | o_t, latent)", fillcolor="#e3f1e0"];
+    reg  [label="‖sg(z) − ẑ‖² + λ‖z − sg(ẑ)‖²", fillcolor="#f6d5d5"];
+    probe[label="Probes (diagnostic only)\nẑ → e per group: R²\nvelocities / mass / friction", fillcolor="#e8e0f1"];
+    real [label="Real robot\nonly the history", fillcolor="#dbe4f0"];
+
+    sim -> priv; sim -> hist;
+    priv -> enc; hist -> est;
+    enc -> gate [label="z (sim only)"]; est -> gate [label="ẑ"];
+    gate -> pol;
+    enc -> reg [style=dashed]; est -> reg [style=dashed];
+    est -> probe [style=dotted];
+    real -> est [label="deploy: mask = 1", style=bold, color="#c0392b"];
+}

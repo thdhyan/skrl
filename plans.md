@@ -12,13 +12,13 @@ information and deployed without it.
 | Workstream | State | Evidence |
 |---|---|---|
 | A. Belief-based agents | BeliefDQN and BeliefPPO work on CartPole POMDP. One filter per agent, so `num_envs = 1` | `docs/belief_ppo/README.md`, `experiments/pomdp_and_obs_groups/README.md` |
-| B. Privileged masking curriculum | PrivilegedPPO works; deployable masked actor 493/500. Not yet better than training masked from the start on CartPole | `docs/privileged_curriculum/README.md` |
+| B. Privileged masking curriculum | PrivilegedPPO works; reward-gated schedule beats time-based on 4 built-in tasks, but always-masked is best on HalfCheetah / InvertedPendulum. The history estimator recovers velocities, not dynamics (system-ID R² ≈ 0–0.1) | `docs/privileged_curriculum/README.md` |
 | C. Transformer policies | Per-dimension-token transformer trunk works; MLP ≥ transformer on InvertedPendulum, InvertedDoublePendulum, HalfCheetah | `examples/transformer_mujoco/README.md` |
 | D. Pursuit-evasion self-play | 2D grid env, MAPPO/IPPO self-play runner, observation-group study | `examples/pursuit_evasion/README.md` |
 
 ## Next plans, in order
 
-### 1. Expose the belief for visualization (belief markers)
+### 1. Expose the belief for visualization (belief markers) — done 2026-10-11 (API + stats + server; Isaac Lab client pending)
 
 Today the belief is internal. `BeliefPPO.act()` returns only actions and `log_prob`; the wrapper pattern (A) puts
 only `belief_entropy` in `info`. The particle filter already has the data: `get_particles()` `[NP, d]`,
@@ -38,6 +38,10 @@ Plan:
 - In pattern B (filter inside the Isaac Lab env, batched over envs) the env owns the belief and draws it directly.
 
 ### 2. Make the privileged curriculum earn its keep
+
+Status 2026-10-11: built-in-task sweep, history / λ ablations done (dl). The bottleneck is the history estimator:
+z keeps the dynamics with λ = 0 (R² 0.9+) but ẑ cannot predict them. Next: supervised system-ID head, temporal
+transformer estimator, wider dynamics ranges and lower noise, then Isaac Lab manipulation.
 
 CartPole is too easy: 8 noisy observations recover the velocities, so masked-from-start ties the curriculum.
 - Move to a task where the privileged values are hard to infer from a short history: friction / mass / contact
@@ -64,6 +68,6 @@ history (a temporal transformer as the PrivilegedPPO estimator). The per-dimensi
 ### 6. Housekeeping
 
 - `pyproject.toml` extras `[belief]`, `[belief-mujoco]`, `[belief-mjlab]`.
-- `CLAUDE.md` names a `belief` conda env that the laptop does not have; decide between conda and the uv `.venv`.
+- [done] `CLAUDE.md` now documents the uv `.venv`.
 - The cloud branch committed offline W&B runs (`experiments/pomdp_and_obs_groups/wandb_offline/`, 2.2 MB);
-  sync them with `wandb sync` and consider removing them from git.
+  synced to W&B and untracked (2026-10-11); still in history until rewritten with `git filter-repo`.

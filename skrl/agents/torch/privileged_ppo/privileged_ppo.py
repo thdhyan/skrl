@@ -5,7 +5,9 @@ from typing import Any
 import dataclasses
 
 import gymnasium
+import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from skrl.agents.torch.ppo import PPO, PPO_CFG
@@ -26,6 +28,15 @@ class PrivilegedPPO_CFG(PPO_CFG):
 
     encoder_loss_scale: float = 0.1
     """Weight of ``||z - sg(ẑ)||²``: keeps the encoder latent reachable by the estimator (ROA-style)."""
+
+    privileged_groups: dict[str, list[int]] | None = None
+    """Named groups of privileged dimensions (e.g. ``{"velocities": [0, 1], "dynamics": [2, 3]}``). Two probes
+    decode the (standardized) privileged values from the detached latents, one from the encoder latent z and one
+    from the history estimator latent ẑ, and their R² is logged per group (``"Probe / ẑ R2 <group>"``): how much
+    of each privileged group the history recovers (online system identification). ``None``: one group per dim."""
+
+    probe_learning_rate: float = 1e-3
+    """Learning rate of the probes (they never change the policy)."""
 
 
 class PrivilegedPPO(PPO):
@@ -68,6 +79,12 @@ class PrivilegedPPO(PPO):
         self.cfg: PrivilegedPPO_CFG
         if not hasattr(getattr(self.policy, "trunk", None), "latents"):
             raise ValueError("The policy needs a `trunk` with a `latents()` method (see PrivilegedActorTrunk)")
+        layout = self.policy.trunk.layout
+        self.privileged_groups = self.cfg.privileged_groups or {f"dim{i}": [i] for i in range(layout.privileged_dim)}
+        self._probes: nn.ModuleDict | None = None
+        self.probe_metrics: dict[str, float] = {}
+        """Last probe R² per group and latent (``"ẑ R2 <group>"``, ``"z R2 <group>"``), measured on each new rollout
+        before the probes train on it."""
 
     def post_interaction(self, *, timestep: int, timesteps: int) -> None:
         if self.cfg.curriculum is not None:
@@ -76,6 +93,11 @@ class PrivilegedPPO(PPO):
         super().post_interaction(timestep=timestep, timesteps=timesteps)
 
     def update(self, *, timestep: int, timesteps: int) -> None:
+        curriculum = self.cfg.curriculum
+        if hasattr(curriculum, "observe_return") and len(self._track_rewards):
+            curriculum.observe_return(float(np.mean(self._track_rewards)))
+            self.track_data("Curriculum / Smoothed return", curriculum.smoothed)
+
         super().update(timestep=timestep, timesteps=timesteps)
 
         trunk = self.policy.trunk
@@ -100,5 +122,38 @@ class PrivilegedPPO(PPO):
 
         self.track_data("Loss / Estimator loss", cumulative_estimator_loss / self.cfg.mini_batches)
         self.track_data("Loss / Encoder loss", cumulative_encoder_loss / self.cfg.mini_batches)
-        masks = trunk.layout.mask(self.memory.get_tensor_by_name("observations").reshape(-1, trunk.layout.size))
-        self.track_data("Curriculum / Masked fraction (rollout)", masks.mean().item())
+        observations = self.memory.get_tensor_by_name("observations").reshape(-1, trunk.layout.size)
+        self.track_data("Curriculum / Masked fraction (rollout)", trunk.layout.mask(observations).mean().item())
+        self._update_probes(observations)
+
+    def _update_probes(self, observations: torch.Tensor) -> None:
+        """Evaluate, then train, the z and ẑ probes on the rollout (privileged values standardized per rollout)."""
+        trunk = self.policy.trunk
+        with torch.no_grad():
+            z, z_hat = trunk.latents(observations)
+            target = trunk.layout.privileged(observations)
+            target = (target - target.mean(0)) / (target.std(0) + 1e-6)
+        if self._probes is None:
+            hidden = 64
+            self._probes = nn.ModuleDict(
+                {
+                    name: nn.Sequential(nn.Linear(z.shape[-1], hidden), nn.ELU(), nn.Linear(hidden, target.shape[-1]))
+                    for name in ("z", "z_hat")
+                }
+            ).to(self.device)
+            self._probe_optimizer = torch.optim.Adam(self._probes.parameters(), lr=self.cfg.probe_learning_rate)
+
+        latents = {"z": z, "z_hat": z_hat}
+        with torch.no_grad():  # held-out evaluation: the probes have not seen this rollout yet
+            for name, latent in latents.items():
+                error = (self._probes[name](latent) - target).pow(2).mean(0)  # per dim; target variance is 1
+                label = "ẑ" if name == "z_hat" else "z"
+                for group, dims in self.privileged_groups.items():
+                    r2 = 1.0 - error[dims].mean().item()
+                    self.probe_metrics[f"{label} R2 {group}"] = r2
+                    self.track_data(f"Probe / {label} R2 {group}", r2)
+        for indices in torch.randperm(len(target), device=self.device).chunk(self.cfg.mini_batches):
+            loss = sum(F.mse_loss(self._probes[n](latent[indices]), target[indices]) for n, latent in latents.items())
+            self._probe_optimizer.zero_grad()
+            loss.backward()
+            self._probe_optimizer.step()

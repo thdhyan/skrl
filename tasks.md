@@ -2,7 +2,7 @@
 
 > Working branch: `feature/privileged-curriculum` (contains `feature/belief-pomdp-manipulation` and the cloud
 > branch `claude/2d-multiagent-ppo-grid-n4ld8f`, merged 2026-10-11). Plans and ordering: [`plans.md`](plans.md).
-> Test status 2026-10-11: 99 passed (command in `README.md`).
+> Test status 2026-10-11: 112 passed (command in `README.md`).
 
 ## 0. Bootstrap ✅
 
@@ -98,17 +98,30 @@
 - [x] `PomdpWrapper` fixes (multi-dim obs, negative indices, `full_obs` on reset) + `tests/envs/test_pomdp_wrapper.py`.
 - [x] W&B fix: `skrl/utils/tensorboard.py` (no training metrics were synced).
 - [x] `experiments/pomdp_and_obs_groups/` — CartPole full/masked/belief and pursuit obs-group studies (offline W&B).
-- [ ] `wandb sync` the offline runs; decide whether `wandb_offline/` stays in git.
+- [x] `wandb sync` the offline runs (15 runs, 2026-10-11).
+- [ ] Remove `wandb_offline/` from git history (needs a user-run history rewrite + force-push).
+- [x] 100×100 arena, spawn domain randomization, potential-field + trail rendering of rollouts (`skrl/envs/pursuit_evasion/render.py`), per-generation opponent sampler schedule and videos in the self-play runner.
 
-## 7f. Belief markers for visualization (next, see plans.md §1)
+## 7f. Belief markers for visualization ✅ (2026-10-11)
 
-The belief is not returned to the sim today: `act()` returns actions + `log_prob`, the wrapper only adds `info["belief_entropy"]`.
+- [x] `skrl/belief/torch/markers.py`: `belief_markers` (particles, weights, GMM clusters, optional world positions via `state_to_position`), `belief_stats` (spread, ESS, number / effective clusters, cluster stds, errors of mean and clusters vs the true state).
+- [x] `BeliefAgentMixin.get_belief_markers()`, `cfg.return_belief_markers` (markers in `act()` outputs), W&B/TensorBoard `Belief / *` stats per step.
+- [x] `BeliefMarkerServer` (HTTP `GET /belief`) + `fetch_belief_markers` for a sim in another process; `mujoco_add_belief_geoms`.
+- [x] CartPole wrapper `info["belief"]`; demo `examples/contact_rich_uncertainty/belief_markers_mujoco_demo.py` (2-panel video).
+- [x] Tests: `tests/belief/test_markers.py`, BeliefPPO markers test.
+- [ ] Isaac Lab `VisualizationMarkers` client (isaac-sim MCP was down; not tested in Isaac Sim).
 
-- [ ] `BeliefAgentMixin.get_belief_markers()` → particles, weights, GMM hefts / means / log-diag-covs.
-- [ ] `BeliefObservationWrapper`: `info["belief"]` with the same dict.
-- [ ] `state_to_position` hook mapping belief state → 3D marker positions.
-- [ ] Isaac Lab `VisualizationMarkers`: weighted particle spheres + GMM ellipsoids + true-state marker, in the debug video.
-- [ ] Test: markers match `get_particles()` / `gmm` and survive an episode reset.
+## 7g. Privileged curriculum on built-in tasks + history estimator as system ID (2026-10-11)
+
+- [x] `RewardGatedMaskCurriculum`: mask step only while the smoothed return holds its level, back-off on drops, deadline floor.
+- [x] Per-group probes: held-out R² of ẑ / z for each privileged group (`cfg.privileged_groups`).
+- [x] `examples/privileged_curriculum/gym_privileged_ppo.py`: Pendulum, InvertedPendulum, HalfCheetah, Hopper with hidden velocities + randomized mass / friction / length.
+- [x] Fix: evaluation now starts fresh episodes (the skrl vector wrapper resets only once).
+- [x] `PrivilegedHistoryWrapper(include_last_action=True)`: observation-action history.
+- [x] Sweep on dl (4 tasks × 4 modes × 3–5 seeds) + history ablation (H, actions; curriculum and visible) + λ = 0 ablation: `docs/privileged_curriculum/plot_gym.py`, results in `docs/privileged_curriculum/README.md`. Finding: ẑ recovers velocities, not dynamics (R² ≈ 0–0.1), even when z keeps them (λ = 0).
+- [x] Slides (`build_sysid_slides.py`) → [Google Slides](https://docs.google.com/presentation/d/14fJ3Bh9L9cFB9bukCwd-6vyzbkuNAJnS5_WehLsm1Tc/edit); write-up → [Google Doc](https://docs.google.com/document/d/1WaQWwzApMI9jwM4obc2njVuPb743bSdufxjB7laiVXE/edit).
+- [ ] Supervised system-ID head (regress e_t from history) and wider dynamics ranges / lower noise.
+- [ ] Temporal-transformer estimator vs MLP (see `docs/transformer_rl_robotics.md`).
 
 ## 8. CartPole physics extensions (answered below)
 

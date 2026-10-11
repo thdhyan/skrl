@@ -1,4 +1,4 @@
-from skrl.agents.torch.privileged_ppo.curriculum import SoftmaxMaskCurriculum
+from skrl.agents.torch.privileged_ppo.curriculum import RewardGatedMaskCurriculum, SoftmaxMaskCurriculum
 from skrl.agents.torch.privileged_ppo.models import (
     ObsLayout,
     PrivilegedActorTrunk,
