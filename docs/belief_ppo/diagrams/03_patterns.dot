@@ -1,0 +1,16 @@
+digraph G {
+  rankdir=LR; bgcolor="white"; pad=0.3; nodesep=0.35; ranksep=0.5; newrank=true;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=12, color="#444444", penwidth=1.2];
+  edge [fontname="Helvetica", fontsize=10, color="#555555", penwidth=1.2];
+  label="Where the filter lives: three integration patterns"; labelloc=t; fontname="Helvetica-Bold"; fontsize=17;
+
+  subgraph cluster_a { label="A. Wrapper + stock PPO (exists, CartPole proven)"; style=rounded; color="#7A9CC6"; fontname="Helvetica";
+    a_env [label="Env", fillcolor="#E8EEF7"]; a_w [label="BeliefObservationWrapper\nPF + GMM", fillcolor="#FFF4D6"]; a_ag [label="stock PPO\nsees b̃ as 'obs'", fillcolor="#E3F4E1"];
+    a_env -> a_w [label="o"]; a_w -> a_ag [label="b̃"]; a_ag -> a_env [label="a"]; }
+  subgraph cluster_b { label="B. Env-side batched filter (Isaac Lab, planned)"; style=rounded; color="#7A9CC6"; fontname="Helvetica";
+    b_env [label="Isaac Lab env\nobs term = belief\n[N, NP, d] on GPU", fillcolor="#FFF4D6"]; b_ag [label="stock PPO\nN parallel envs", fillcolor="#E3F4E1"];
+    b_env -> b_ag [label="b̃ [N, dim]"]; b_ag -> b_env [label="a [N]"]; }
+  subgraph cluster_c { label="C. Agent-owned filter — BeliefPPO (NEW)"; style=rounded; color="#2E7D32"; penwidth=2; fontname="Helvetica-Bold";
+    c_env [label="Env\nraw masked obs", fillcolor="#E8EEF7"]; c_ag [label="BeliefPPO\nPF + GMM + π + V\nnum_envs = 1", fillcolor="#E3F4E1"];
+    c_env -> c_ag [label="o"]; c_ag -> c_env [label="a"]; }
+}

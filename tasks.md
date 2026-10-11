@@ -60,6 +60,23 @@
 - [ ] `docs/source/belief.rst` + CHANGELOG entry.
 - [ ] `handoff.md` update.
 
+## 7b. BeliefPPO agent ✅ (2026-10-10)
+
+- [x] `skrl/agents/torch/belief_ppo/belief_ppo.py` — `BeliefPPO(BeliefAgentMixin, Agent)`, agent-owned filter (pattern C), num_envs=1.
+- [x] `skrl/agents/torch/belief_ppo/models.py` — `ResNetCategoricalPolicy`, `ResNetValue` (paper trunk).
+- [x] `BeliefPPO_CFG.belief_prior_fn(obs)` — re-seeds filter at each episode start.
+- [x] `tests/agents/torch/test_belief_ppo.py` — 8 tests; belief suite 44/44 green.
+- [x] `examples/contact_rich_uncertainty/cartpole_pomdp_belief_ppo_agent.py` — CartPole-POMDP smoke (reaches 500; raw-obs baseline ~100).
+- [x] Pipeline diagrams + write-up: `docs/belief_ppo/`.
+- [ ] Multi-seed comparison C vs A (same MLP) — gap unresolved on 1 seed.
+- [ ] Batched (num_envs>1) BeliefPPO or pattern B for Isaac Lab.
+
+## 7c. Transformer policies for MuJoCo ✅ smoke (2026-10-10)
+
+- [x] `skrl/models/torch/transformer.py` — per-dim tokenizer + CLS transformer trunk, Gaussian policy + value.
+- [x] `examples/transformer_mujoco/` — PPO on HalfCheetah-v5 / InvertedPendulum-v5 / InvertedDoublePendulum-v5, `--model {transformer,mlp}`, video.
+- [ ] Long runs (≥1M steps) + multi-seed transformer vs MLP. No triple-pendulum env in gymnasium (custom MJCF needed).
+
 ## 8. CartPole physics extensions (answered below)
 
 CartPole friction and mass are configurable — see §8 answer in handoff.md.

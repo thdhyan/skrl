@@ -1,0 +1,14 @@
+digraph G {
+  rankdir=LR; bgcolor="white"; pad=0.3; nodesep=0.35; ranksep=0.45;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=13, color="#444444", penwidth=1.3];
+  edge [fontname="Helvetica", fontsize=11, color="#555555", penwidth=1.3];
+  label="Transformer policy/value (replaces MLP) — skrl/models/torch/transformer.py"; labelloc=t; fontname="Helvetica-Bold"; fontsize=17;
+  obs  [label="obs o ∈ ℝ^D\n(e.g. HalfCheetah D=17)", fillcolor="#E8EEF7"];
+  tok  [label="ObsTokenizer\nLinear(1,64)(oᵢ) + E_dim[i]\n→ D tokens", fillcolor="#FFF4D6"];
+  cls  [label="[CLS] token\n(learned)", fillcolor="#FFF4D6"];
+  enc  [label="TransformerEncoder\n2 layers, 4 heads, d=64, ff=128\npre-norm", fillcolor="#FFE8CC"];
+  ln   [label="LayerNorm(CLS)\n→ h ∈ ℝ^64", fillcolor="#FFFFFF"];
+  pi   [label="Policy head\nμ = Linear(h)\nlog σ = parameter", fillcolor="#E3F4E1"];
+  v    [label="Value head\nV = Linear(h)\n(separate trunk)", fillcolor="#E3F4E1"];
+  obs -> tok -> enc; cls -> enc; enc -> ln; ln -> pi; ln -> v;
+}

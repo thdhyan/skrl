@@ -20,6 +20,11 @@ class BeliefPPO_CFG(AgentCfg):
     Must return a configured ParticleFilter (or subclass) with the
     backend already injected.  Required — no default."""
 
+    belief_prior_fn: Optional[Callable] = None
+    """Callable(observation) -> initial particles ``[NP, state_dim]``.
+    Called with the first raw observation of every episode (shape ``[obs_dim]``)
+    to re-seed the filter.  ``None`` keeps the filter running across episodes."""
+
     num_controllers: int = 20
     """NC — number of discrete low-level motion controllers."""
 

@@ -1,0 +1,29 @@
+digraph G {
+  rankdir=LR; bgcolor="white"; pad=0.3; nodesep=0.5; ranksep=0.6;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=13, color="#444444", penwidth=1.3];
+  edge [fontname="Helvetica", fontsize=11, color="#555555", penwidth=1.3];
+  label="BeliefPPO — one environment step (act → env.step → record_transition)"; labelloc=t; fontname="Helvetica-Bold"; fontsize=17;
+
+  env   [label="Environment\n(POMDP)\nhidden dims masked", fillcolor="#E8EEF7"];
+  subgraph cluster_agent {
+    label="BeliefPPO agent (owns the filter)"; style="rounded,dashed"; color="#888888"; fontname="Helvetica"; fontsize=13;
+    prior [label="belief_prior_fn(o₀)\n(episode start only)\n→ X₀ ∈ ℝ^{NP×d}", fillcolor="#FFF4D6"];
+    pf    [label="Particle filter\npredict(aₜ)  →  update(oₜ₊₁)\n→ systematic resample", fillcolor="#FFF4D6"];
+    gmm   [label="compress()\nEM fit NG-component GMM\nb̃ = [π | μ | log σ²]\ndim = NG + 2·NG·d", fillcolor="#FFE8CC"];
+    pol   [label="Policy π_θ(a | b̃)\nResNet trunk → logits\n(Categorical over NC)", fillcolor="#E3F4E1"];
+    val   [label="Value V_φ(b̃)\nResNet trunk → scalar", fillcolor="#E3F4E1"];
+    mem   [label="Rollout memory\n(b̃ₜ, aₜ, log πₜ, Vₜ, rₜ, done)", fillcolor="#EFE6F7"];
+  }
+  env -> prior [label="o₀", style=dashed];
+  prior -> pf [style=dashed];
+  env -> pf [label="oₜ₊₁ (raw, masked)"];
+  pf -> gmm;
+  gmm -> pol [label="b̃ₜ"];
+  gmm -> val [label="b̃ₜ"];
+  pol -> env [label="aₜ ~ π"];
+  pol -> pf [label="aₜ (control for\nmotion model)", style=dotted];
+  env -> mem [label="rₜ, done"];
+  pol -> mem [label="aₜ, log π"];
+  val -> mem [label="V(b̃ₜ)"];
+  gmm -> mem [label="b̃ₜ"];
+}

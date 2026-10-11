@@ -1,0 +1,24 @@
+digraph G {
+  rankdir=TB; bgcolor="white"; pad=0.3; nodesep=0.4; ranksep=0.45;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=13, color="#444444", penwidth=1.3];
+  edge [fontname="Helvetica", fontsize=11, color="#555555", penwidth=1.3];
+  label="BeliefPPO — update() every `rollouts` steps"; labelloc=t; fontname="Helvetica-Bold"; fontsize=17;
+
+  buf  [label="Rollout memory (T = rollouts)\nb̃₀..b̃_{T-1}, a, log π_old, V_old, r, terminated, truncated", fillcolor="#EFE6F7"];
+  boot [label="Bootstrap: V_φ(b̃_T)\n(b̃_T = filter state after last record_transition)", fillcolor="#E3F4E1"];
+  gae  [label="GAE (compute_gae from stock PPO)\nδₜ = rₜ + γ(1−doneₜ)V(b̃ₜ₊₁) − V(b̃ₜ)\nÂₜ = Σ (γλ)^k δₜ₊ₖ ,  Rₜ = Âₜ + Vₜ ,  normalise Â", fillcolor="#FFF4D6"];
+  pre  [label="Value preprocessor (RunningStandardScaler)\nfit on V, R", fillcolor="#FFFFFF"];
+  loop [label="for epoch in learning_epochs:\n  for mini-batch of b̃ in memory.sample(mini_batches):", fillcolor="#E8EEF7"];
+  pl   [label="Policy loss\nρ = exp(log π_θ(a|b̃) − log π_old)\nL_π = −mean min(ρÂ, clip(ρ,1±ε)Â)", fillcolor="#E3F4E1"];
+  vl   [label="Value loss\nV_clip = V_old + clip(V_φ(b̃) − V_old, ±c)\nL_V = k_v · MSE(R, V_clip)", fillcolor="#E3F4E1"];
+  el   [label="Entropy bonus\nL_H = −k_H · H[π_θ(·|b̃)]", fillcolor="#E3F4E1"];
+  kl   [label="approx KL = mean((ρ−1) − log ρ)\nbreak epoch if KL > kl_threshold", fillcolor="#FFE8CC"];
+  opt  [label="Adam step on θ ∪ φ\n(AMP GradScaler, grad-norm clip)\n+ optional LR scheduler (KLAdaptiveLR)", fillcolor="#FFE8CC"];
+  log  [label="TensorBoard: Policy / Value / Entropy loss,\nBelief / entropy, Belief / compress_ms", fillcolor="#FFFFFF"];
+
+  buf -> gae; boot -> gae; gae -> pre -> loop;
+  loop -> kl; kl -> pl; loop -> vl; loop -> el;
+  pl -> opt; vl -> opt; el -> opt;
+  opt -> loop [label="next mini-batch", style=dashed];
+  opt -> log;
+}
