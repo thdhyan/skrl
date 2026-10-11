@@ -59,6 +59,15 @@ class PursuitEvasionCfg:
     spawn_min_distance: int = 3
     """Minimum Manhattan distance between the evader and every pursuer at reset."""
 
+    # spawn domain randomization (sampled independently for every episode of every sub-environment)
+    spawn_min_distance_range: tuple[int, int] | None = None
+    """If set, the minimum evader-pursuer distance of each episode is drawn uniformly from this (inclusive) range
+    instead of using ``spawn_min_distance`` (randomizes the initial difficulty)."""
+    spawn_cluster_prob: float = 0.0
+    """Probability that the pursuers of an episode spawn clustered around a random free cell (otherwise uniformly)."""
+    spawn_cluster_radius: int = 5
+    """Half-size (cells) of the square around the cluster centre in which clustered pursuers spawn."""
+
     # rewards (zero-sum: evader reward = - pursuer team reward)
     capture_reward: float = 10.0
     """Pursuer team reward on capture."""
@@ -180,6 +189,9 @@ class PursuitEvasionEnv:
             raise ValueError(f"Unknown capture metric: {cfg.capture_metric}")
         if cfg.max_steps < 1:
             raise ValueError("max_steps must be positive")
+        distance_range = cfg.spawn_min_distance_range
+        if distance_range is not None and not 0 <= distance_range[0] <= distance_range[1]:
+            raise ValueError(f"Invalid spawn_min_distance_range: {cfg.spawn_min_distance_range}")
 
     def _build_obstacles(self) -> torch.Tensor:
         cfg = self.cfg
@@ -212,21 +224,25 @@ class PursuitEvasionEnv:
             :func:`~skrl.envs.pursuit_evasion.potential_fields.compute_agent_fields`).
         """
         if self._fields_cache is None:
-            cfg = self.cfg
-            self._fields_cache = compute_agent_fields(
-                pursuers=self.positions[:, : self.num_pursuers],
-                evader=self.positions[:, -1],
-                coords=self._coords,
-                obstacle_potential=self._obstacle_potential,
-                k_att=cfg.k_att,
-                k_pp=cfg.k_pp,
-                d0_pp=cfg.d0_pp,
-                k_ep=cfg.k_ep,
-                d0_ep=cfg.d0_ep,
-                k_center=cfg.k_center,
-                d_min=cfg.d_min,
-            )
+            self._fields_cache = self.potential_fields_at(self.positions)
         return self._fields_cache
+
+    def potential_fields_at(self, positions: torch.Tensor) -> dict[str, torch.Tensor]:
+        """Potential fields of every agent for arbitrary positions ``(B, num_agents, 2)`` (not cached)."""
+        cfg = self.cfg
+        return compute_agent_fields(
+            pursuers=positions[:, : self.num_pursuers],
+            evader=positions[:, -1],
+            coords=self._coords,
+            obstacle_potential=self._obstacle_potential,
+            k_att=cfg.k_att,
+            k_pp=cfg.k_pp,
+            d0_pp=cfg.d0_pp,
+            k_ep=cfg.k_ep,
+            d0_ep=cfg.d0_ep,
+            k_center=cfg.k_center,
+            d_min=cfg.d_min,
+        )
 
     def _shaping_potential(self, positions: torch.Tensor) -> torch.Tensor:
         """``Phi(s) = -mean_i U_att(p_i; evader)`` (evaluated only at the pursuers' cells), shape ``(E,)``."""
@@ -245,12 +261,33 @@ class PursuitEvasionEnv:
         n = env_ids.numel()
         if not n:
             return
+        cfg = self.cfg
         num_free = self._free_cells.shape[0]
         index = torch.randint(num_free, (n, self.num_agents), device=self.device, generator=self._generator)
         positions = self._free_cells[index]  # (n, A, 2)
-        min_distance = max(self.cfg.spawn_min_distance, self.cfg.capture_radius + 1)
+        if cfg.spawn_cluster_prob > 0:
+            # clustered pursuers: uniform offsets around a random free cell (cells off the grid or on obstacles
+            # keep their uniform sample)
+            clustered = torch.rand(n, device=self.device, generator=self._generator) < cfg.spawn_cluster_prob
+            centre = self._free_cells[torch.randint(num_free, (n,), device=self.device, generator=self._generator)]
+            r = cfg.spawn_cluster_radius
+            offsets = torch.randint(
+                -r, r + 1, (n, self.num_pursuers, 2), device=self.device, generator=self._generator
+            )
+            cluster = centre[:, None] + offsets
+            cluster[..., 0].clamp_(0, self.height - 1)
+            cluster[..., 1].clamp_(0, self.width - 1)
+            ok = clustered[:, None] & ~self.obstacles[cluster[..., 0], cluster[..., 1]]
+            positions[:, :-1] = torch.where(ok[..., None], cluster, positions[:, :-1])
+        if cfg.spawn_min_distance_range is not None:
+            low, high = cfg.spawn_min_distance_range
+            min_distance = torch.randint(low, high + 1, (n,), device=self.device, generator=self._generator)
+        else:
+            min_distance = torch.full((n,), cfg.spawn_min_distance, device=self.device)
+        min_distance = min_distance.clamp(min=cfg.capture_radius + 1)
         for _ in range(100):  # rejection sampling of the evader position
-            too_close = ((positions[:, :-1] - positions[:, -1:]).abs().sum(-1) < min_distance).any(-1)
+            distance = (positions[:, :-1] - positions[:, -1:]).abs().sum(-1)
+            too_close = (distance < min_distance[:, None]).any(-1)
             if not too_close.any():
                 break
             k = int(too_close.sum())
@@ -301,7 +338,8 @@ class PursuitEvasionEnv:
         :return: Observations, rewards ``(E, 1)``, terminated ``(E, 1)``, truncated ``(E, 1)`` and info. The
             observations of ended sub-environments are the first observations of the new episode. ``info`` contains
             ``"captured"`` and ``"done"`` (``(E,)`` bool), ``"episode_length"`` (``(E,)``, valid where done) and
-            ``"episode"`` (scalar statistics of the episodes ended at this step, if any).
+            ``"episode"`` (scalar statistics of the episodes ended at this step, if any) and ``"final_positions"``
+            (``(E, A, 2)`` positions before the automatic reset, if any episode ended).
         """
         cfg = self.cfg
         action = torch.stack([actions[uid].view(-1) for uid in self.possible_agents], dim=-1)
@@ -335,6 +373,7 @@ class PursuitEvasionEnv:
         episode_length = self.timestep.clone()
         info: dict[str, Any] = {"captured": captured, "done": done, "episode_length": episode_length}
         if done.any():
+            info["final_positions"] = new.clone()  # positions before the automatic reset below
             info["episode"] = {
                 "capture_rate": captured[done].float().mean(),
                 "episode_length": episode_length[done].float().mean(),

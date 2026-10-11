@@ -270,3 +270,27 @@ def test_wandb_logging_one_step_per_generation(monkeypatch):
     assert {"pursuers/train_win_rate", "pursuers/eval_score", "pursuers/opponent_entropy"} <= set(step1)
     assert "pursuers/member3/learning_rate" in step1 and "evader/eval_score" in calls["log"][1][1]
     assert calls["finish"] == 1
+
+
+def test_sampler_schedule_and_videos(tmp_path):
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("imageio_ffmpeg")
+    env = PursuitEvasionEnv(num_envs=4, height=6, width=6, num_pursuers=2, max_steps=8, device="cpu", seed=0)
+    cfg = SelfPlayCfg(
+        generations=3,
+        timesteps_per_generation=8,
+        sampler_schedule=["last", "uniform"],
+        eval_episodes=2,
+        hidden_sizes=(16,),
+        agent_cfg={"rollouts": 8, "learning_epochs": 1, "mini_batches": 1},
+        video_dir=str(tmp_path / "videos"),
+        video_interval=2,
+        video_max_steps=5,
+        seed=0,
+        verbose=False,
+    )
+    history = SelfPlayRunner(env, cfg).run()
+    assert [record["sampler"] for record in history] == ["last", "uniform", "last"]
+    assert "videos" not in history[0] and "videos" in history[1]
+    for path in history[1]["videos"].values():
+        assert os.path.getsize(path) > 0

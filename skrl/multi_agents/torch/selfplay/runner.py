@@ -90,7 +90,12 @@ class SelfPlayCfg:
     sampler: str = "uniform"
     """Opponent sampling strategy: ``"last"``, ``"best"``, ``"uniform"``, ``"hedge"``, ``"adaptive_pbt"``."""
     sampler_kwargs: dict = dataclasses.field(default_factory=dict)
-    """Keyword arguments of the sampler's constructor."""
+    """Keyword arguments of the sampler's constructor (with ``sampler_schedule``: a mapping from sampler name to
+    keyword arguments)."""
+    sampler_schedule: list[str] | None = None
+    """Opponent sampler per generation, cycled: generation ``g`` uses ``sampler_schedule[(g - 1) % len]`` (e.g.
+    ``["last", "uniform", "hedge"]``). Overrides ``sampler`` for the opponent choice. The members get a fresh sampler
+    whenever the scheduled name changes (adaptive statistics are not carried over)."""
     training_scheme: str = "alternating"
     """``"alternating"`` (one team learns per generation) or ``"simultaneous"`` (both teams every generation)."""
     first_learner: str = "pursuers"
@@ -143,6 +148,14 @@ class SelfPlayCfg:
     """Log every generation's metrics to Weights & Biases (one step per generation)."""
     wandb_kwargs: dict = dataclasses.field(default_factory=dict)
     """Keyword arguments of ``wandb.init`` (e.g. ``project``, ``group``, ``name``, ``mode``)."""
+    video_dir: str | None = None
+    """If set, a debug video (potential fields, trails, capture radius; see
+    :class:`~skrl.envs.pursuit_evasion.render.RolloutRenderer`) of one episode of each learning team's best member
+    against the latest opponent snapshot is written there every ``video_interval`` generations (and logged to W&B)."""
+    video_interval: int = 1
+    """Generations between debug videos."""
+    video_max_steps: int | None = None
+    """Maximum steps per debug video (default: the environment's ``max_steps``)."""
 
 
 @dataclasses.dataclass
@@ -238,7 +251,7 @@ class SelfPlayRunner:
                     team=team,
                     index=i,
                     learner=self._build_learner(team, bounds[i], bounds[i + 1], i),
-                    sampler=make_sampler(cfg.sampler, **cfg.sampler_kwargs),
+                    sampler=self._make_sampler(self._sampler_name(1)),
                     start=bounds[i],
                     stop=bounds[i + 1],
                     rating=cfg.initial_rating,
@@ -271,6 +284,14 @@ class SelfPlayRunner:
     # ------------------------------------------------------------------
     # construction helpers
     # ------------------------------------------------------------------
+
+    def _sampler_name(self, generation: int) -> str:
+        schedule = self.cfg.sampler_schedule
+        return schedule[(generation - 1) % len(schedule)] if schedule else self.cfg.sampler
+
+    def _make_sampler(self, name: str) -> OpponentSampler:
+        kwargs = self.cfg.sampler_kwargs.get(name, {}) if self.cfg.sampler_schedule else self.cfg.sampler_kwargs
+        return make_sampler(name, **kwargs)
 
     @property
     def learners(self) -> dict[str, Any]:
@@ -309,7 +330,7 @@ class SelfPlayRunner:
             action_space=self.env.action_space(uid),
             device=self.device,
             hidden_sizes=self.cfg.hidden_sizes,
-        )
+        ).to(self.device)
 
     def _make_value(self, uid: str) -> MLPValue:
         return MLPValue(
@@ -562,6 +583,53 @@ class SelfPlayRunner:
         scores = scores[:episodes]
         return sum(scores) / len(scores) if scores else 0.5
 
+    @torch.no_grad()
+    def record_video(self, team: str, path: str, opponent_index: int | None = None, fps: int = 10) -> str:
+        """Record one episode (sub-environment 0) of the team's best member against an opponent snapshot.
+
+        :param opponent_index: Opponent pool index (default: the latest snapshot).
+
+        :return: Path of the written video.
+        """
+        from skrl.envs.pursuit_evasion.render import RolloutRenderer, write_video
+
+        opponent = self.opponent_of[team]
+        pool = self.pools[opponent]
+        index = len(pool) - 1 if opponent_index is None else opponent_index
+        member = self.members[team][self.best_member[team]]
+        policies = {uid: member.learner.policies[uid] for uid in self.teams[team]}
+        for model in policies.values():
+            model.eval()
+        indices = torch.full((self.num_envs,), index, dtype=torch.long)
+        first_uid = self.env.possible_agents[0]
+        max_steps = self.cfg.video_max_steps or getattr(getattr(self.env, "cfg", None), "max_steps", 1000)
+        label = f"gen {self.generation} | sampler {self._sampler_name(self.generation)} | {team} best member vs "
+        label += f"{opponent} gen {self._entry_label(pool[index])}"
+
+        renderer = RolloutRenderer(self.env)
+        observations, _ = self.env.reset()
+        states = self.env.state()
+        frames = [renderer.frame(label)]
+        full = slice(0, self.num_envs)
+        for step in range(max_steps):
+            actions = self._empty_actions()
+            for uid, action in self._policy_actions(
+                policies, observations, states, full, self.cfg.eval_deterministic
+            ).items():
+                actions[uid][:] = action.view(-1, 1).long()
+            self._opponent_actions(opponent, indices, observations, states, full, actions)
+            observations, _, terminated, truncated, infos = self.env.step(actions)
+            states = self.env.state()
+            if bool(terminated[first_uid][0] | truncated[first_uid][0]):
+                outcome = "CAPTURED" if bool(terminated[first_uid][0]) else "EVADED"
+                frame = renderer.frame(f"{label} | {outcome}", infos["final_positions"][0], step + 1)
+                frames.extend([frame] * fps)  # hold the final frame for one second
+                break
+            frames.append(renderer.frame(label))
+        renderer.close()
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        return write_video(path, frames, fps=fps)
+
     def _evaluation_opponents(self, pool: OpponentPool) -> list[int]:
         k = max(1, self.cfg.eval_max_opponents)
         indices = set(range(max(0, len(pool) - (k - 1)), len(pool))) if k > 1 else set()
@@ -741,8 +809,13 @@ class SelfPlayRunner:
             self.generation += 1
             start = time.perf_counter()
             teams = self._learning_teams_of(self.generation)
+            sampler_name = self._sampler_name(self.generation)
+            for team in teams:
+                for member in self.members[team]:
+                    if member.sampler.name != sampler_name:
+                        member.sampler = self._make_sampler(sampler_name)
             train_stats = self.train_generation(teams)
-            record: dict[str, Any] = {"generation": self.generation, "teams": {}}
+            record: dict[str, Any] = {"generation": self.generation, "sampler": sampler_name, "teams": {}}
             for team in teams:
                 opponent_pool = self.pools[self.opponent_of[team]]
                 for member in self.members[team]:
@@ -800,6 +873,13 @@ class SelfPlayRunner:
                 for team, pool in self.pools.items()
             }
             record["elapsed_s"] = round(time.perf_counter() - start, 2)
+            if self.cfg.video_dir and self.generation % max(1, self.cfg.video_interval) == 0:
+                record["videos"] = {
+                    team: self.record_video(
+                        team, os.path.join(self.cfg.video_dir, f"gen{self.generation:03d}_{team}.mp4")
+                    )
+                    for team in teams
+                }
             self.history.append(record)
             if self.cfg.verbose:
                 self._log(record)
@@ -839,6 +919,8 @@ class SelfPlayRunner:
                 metrics[f"{prefix}/learning_rate"] = member["hyperparameters"]["learning_rate"]
                 metrics[f"{prefix}/entropy_loss_scale"] = member["hyperparameters"]["entropy_loss_scale"]
                 metrics[f"{prefix}/exploited"] = float("exploit_from_member" in member.get("pbt", {}))
+        for team, path in record.get("videos", {}).items():
+            metrics[f"{team}/video"] = wandb.Video(path, format="mp4")
         wandb.log(metrics, step=record["generation"])
 
     def close(self) -> None:
@@ -856,7 +938,7 @@ class SelfPlayRunner:
         return entry.generation if member is None or entry.generation == 0 else f"{entry.generation}.{member}"
 
     def _log(self, record: dict) -> None:
-        lines = [f"[self-play] generation {record['generation']} ({record['elapsed_s']} s)"]
+        lines = [f"[self-play] generation {record['generation']} ({record['elapsed_s']} s, sampler {record['sampler']})"]
         for team, info in record["teams"].items():
             train = info["train_win_rate"]
             lines.append(

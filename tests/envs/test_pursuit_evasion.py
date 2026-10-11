@@ -199,3 +199,47 @@ def test_cfg_object_and_render():
     env.reset()
     text = env.render()
     assert len(text.splitlines()) == 5 and "E" in text
+
+
+def test_spawn_domain_randomization():
+    env = make_env(
+        num_envs=64, height=20, width=20, spawn_min_distance_range=(3, 15), spawn_cluster_prob=1.0,
+        spawn_cluster_radius=2,
+    )
+    env.reset()
+    positions = env.positions
+    pursuers, evader = positions[:, :-1], positions[:, -1:]
+    distance = (pursuers - evader).abs().sum(-1).min(-1).values
+    assert (distance >= 3).all()
+    assert len(set(distance.tolist())) > 1  # the minimum distance varies across episodes
+    spread = (pursuers.max(1).values - pursuers.min(1).values).max(-1).values
+    assert (spread <= 4).float().mean() > 0.5  # clustered pursuers (some fall back to uniform after rejection)
+    with pytest.raises(ValueError):
+        make_env(spawn_min_distance_range=(5, 2))
+
+
+def test_final_positions_before_auto_reset():
+    env = make_env(num_envs=2, max_steps=3)
+    env.reset()
+    for _ in range(3):
+        _, _, terminated, truncated, info = env.step({uid: torch.zeros(2, 1, dtype=torch.long) for uid in env.possible_agents})
+    assert any((terminated[uid] | truncated[uid]).any() for uid in env.possible_agents)
+    assert info["final_positions"].shape == (2, env.num_agents, 2)
+
+
+def test_rollout_renderer(tmp_path):
+    pytest.importorskip("matplotlib")
+    from skrl.envs.pursuit_evasion.render import RolloutRenderer, write_video
+
+    env = make_env(obstacle_density=0.1)
+    env.reset()
+    renderer = RolloutRenderer(env)
+    frames = [renderer.frame("test")]
+    env.step({uid: torch.randint(5, (4, 1)) for uid in env.possible_agents})
+    frames.append(renderer.frame("test"))
+    renderer.close()
+    assert frames[0].ndim == 3 and frames[0].shape[-1] == 3 and frames[0].dtype.name == "uint8"
+    assert frames[0].shape == frames[1].shape
+    assert all(len(trail) == 2 for trail in renderer.trails)
+    write_video(str(tmp_path / "rollout.gif"), frames)
+    assert (tmp_path / "rollout.gif").exists()
