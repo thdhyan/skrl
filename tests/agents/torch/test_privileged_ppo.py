@@ -314,3 +314,105 @@ def test_sysid_needs_head() -> None:
             device="cpu",
             cfg={"sysid_loss_scale": 1.0},
         )
+
+
+def _train(agent, obs_batch, timesteps) -> None:
+    agent.init()
+    agent.enable_training_mode(True, apply_to_models=False)
+    for t in range(timesteps):
+        obs = obs_batch()
+        with torch.no_grad():
+            actions, _ = agent.act(obs, None, timestep=t, timesteps=timesteps)
+            agent.record_transition(
+                observations=obs, states=None, actions=actions, rewards=torch.ones(2, 1),
+                next_observations=obs_batch(), next_states=None,
+                terminated=torch.zeros(2, 1, dtype=torch.bool), truncated=torch.zeros(2, 1, dtype=torch.bool),
+                infos={}, timestep=t, timesteps=timesteps,
+            )
+        agent.post_interaction(timestep=t, timesteps=timesteps)
+
+
+def _make_agent(policy, **cfg):
+    obs_space, act_space = _space(LAYOUT.size), gymnasium.spaces.Discrete(NA)
+    return PrivilegedPPO(
+        models={"policy": policy, "value": PrivilegedValue(obs_space, act_space, "cpu", layout=LAYOUT)},
+        memory=RandomMemory(memory_size=ROLLOUTS, num_envs=2, device="cpu"),
+        observation_space=obs_space,
+        action_space=act_space,
+        device="cpu",
+        cfg=PrivilegedPPO_CFG(rollouts=ROLLOUTS, learning_epochs=2, mini_batches=2, encoder_loss_scale=0.0, **cfg),
+    )
+
+
+def _history_batch(mask=1.0):  # privileged values are a function of the oldest history frame
+    x = torch.randn(2, LAYOUT.size)
+    x[:, -P - 1 : -1] = x[:, D : D + P]
+    x[:, -1] = mask
+    return x
+
+
+def test_osi_estimator_regresses_privileged_values() -> None:
+    torch.manual_seed(0)
+    policy = PrivilegedCategoricalPolicy(_space(LAYOUT.size), gymnasium.spaces.Discrete(NA), "cpu", layout=LAYOUT, osi=True)
+    trunk = policy.trunk
+    probe = torch.cat([_history_batch() for _ in range(64)])
+    assert trunk.estimate(probe).shape == (len(probe), P)
+    with torch.no_grad():  # ẑ is the encoder applied to the estimate ê
+        assert torch.allclose(trunk.latents(probe)[1], trunk.encoder(trunk.estimate(probe)))
+    agent = _make_agent(policy)
+    _train(agent, _history_batch, 60 * ROLLOUTS)
+    with torch.no_grad():
+        target = LAYOUT.privileged(probe)
+        r2 = 1 - (trunk.estimate(probe) - target).pow(2).mean(0) / target.var(0)
+    assert torch.all(r2 > 0.5)
+    assert all(k in agent.probe_metrics for k in ("ê R2 dim0", "ê R2 dim1"))
+
+
+def test_rma_phase2_trains_only_the_estimator() -> None:
+    torch.manual_seed(0)
+    policy = PrivilegedCategoricalPolicy(_space(LAYOUT.size), gymnasium.spaces.Discrete(NA), "cpu", layout=LAYOUT)
+    agent = _make_agent(policy, freeze_policy_after=0.0)
+    frozen = {k: v.clone() for k, v in policy.state_dict().items() if not k.startswith("trunk.estimator")}
+    frozen.update({f"value.{k}": v.clone() for k, v in agent.value.state_dict().items()})
+    estimator = {k: v.clone() for k, v in policy.trunk.estimator.state_dict().items()}
+    _train(agent, _history_batch, 4 * ROLLOUTS)
+    current = {**policy.state_dict(), **{f"value.{k}": v for k, v in agent.value.state_dict().items()}}
+    assert all(torch.equal(current[k], v) for k, v in frozen.items())
+    assert any(not torch.equal(policy.trunk.estimator.state_dict()[k], v) for k, v in estimator.items())
+
+
+def test_contrastive_loss_groups_same_dynamics() -> None:
+    torch.manual_seed(0)
+    policy = PrivilegedCategoricalPolicy(
+        _space(LAYOUT.size), gymnasium.spaces.Discrete(NA), "cpu", layout=LAYOUT, contrastive_head=True
+    )
+    agent = _make_agent(policy, estimator_loss_scale=0.0, contrastive_loss_scale=1.0, contrastive_dims=[1])
+
+    def obs_batch():  # 4 "episodes": privileged dim 1 is a sign pattern of the oldest history frame
+        x = _history_batch()
+        x[:, -2] = (x[:, D] > 0).float() * 2 + (x[:, D + 1] > 0).float()
+        return x
+
+    probe = torch.cat([obs_batch() for _ in range(64)])
+
+    def loss():
+        with torch.no_grad():
+            return agent._contrastive_loss(policy.trunk.latents(probe)[1], LAYOUT.privileged(probe)[:, [1]]).item()
+
+    before = loss()
+    _train(agent, obs_batch, 60 * ROLLOUTS)
+    assert loss() < before - 0.3
+
+
+def test_whitening_gives_identity_covariance() -> None:
+    torch.manual_seed(0)
+    z = torch.randn(4096, 3) * torch.tensor([3.0, 1.0, 0.5]) @ torch.linalg.qr(torch.randn(3, 3))[0]
+    w = PrivilegedPPO._whitening(z)
+    white = (z - z.mean(0)) @ w
+    assert torch.allclose(white.T @ white / (len(z) - 1), torch.eye(3), atol=0.02)
+
+
+def test_contrastive_needs_head_and_dims() -> None:
+    policy = PrivilegedCategoricalPolicy(_space(LAYOUT.size), gymnasium.spaces.Discrete(NA), "cpu", layout=LAYOUT)
+    with pytest.raises(ValueError):
+        _make_agent(policy, contrastive_loss_scale=1.0, contrastive_dims=[1])

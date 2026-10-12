@@ -138,21 +138,34 @@ class PrivilegedActorTrunk(nn.Module):
         hidden: int = 64,
         estimator: str = "mlp",
         sysid_head: bool = False,
+        osi: bool = False,
+        contrastive_head: bool = False,
     ) -> None:
         super().__init__()
         self.layout = layout
         self.encoder = _mlp([layout.privileged_dim, hidden, latent_dim])
-        self.estimator = make_estimator(estimator, layout, hidden, latent_dim)
+        # osi (UP-OSI): the estimator predicts the privileged values ê themselves and ẑ = μ(sg(ê)), so the estimator
+        # is trained by supervision only (``PrivilegedPPO``) and the policy reads its estimate through the encoder
+        self.osi = osi
+        self.estimator = make_estimator(estimator, layout, hidden, layout.privileged_dim if osi else latent_dim)
         self._flat_history = estimator == "mlp"
         self.actor = _mlp([layout.obs_dim + latent_dim, hidden, hidden])
         self.output_dim = hidden
         # decoder ψ: latent → standardized privileged values. ψ(z) makes (μ, ψ) an autoencoder of the privileged
         # values, ψ(ẑ) a supervised system-identification head on the history (trained by PrivilegedPPO)
         self.sysid = _mlp([latent_dim, hidden, layout.privileged_dim]) if sysid_head else None
+        # projection head g for the contrastive loss on ẑ (``PrivilegedPPO.cfg.contrastive_loss_scale``)
+        self.contrast = _mlp([latent_dim, hidden, latent_dim]) if contrastive_head else None
+
+    def estimate(self, x: torch.Tensor) -> torch.Tensor:
+        """Raw estimator output: ẑ, or the privileged-value estimate ê with ``osi=True``."""
+        return self.estimator(self.layout.with_history(x) if self._flat_history else x)
 
     def latents(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``(z, ẑ)``: encoder latent of the privileged values and estimator latent of the history."""
-        z_hat = self.estimator(self.layout.with_history(x) if self._flat_history else x)
+        z_hat = self.estimate(x)
+        if self.osi:
+            z_hat = self.encoder(z_hat.detach())
         return self.encoder(self.layout.privileged(x)), z_hat
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

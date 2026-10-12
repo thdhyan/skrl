@@ -13,6 +13,12 @@ Modes:
 * ``gated``: reward-gated schedule (``RewardGatedMaskCurriculum``): the mask probability grows by one step
   only once the training return is constant at its best level, and backs off when it drops.
 * ``masked`` / ``visible``: privileged values always masked / always visible.
+* ``rma``: RMA two-phase training: visible (policy trained on z) until ``--rma-switch``, then every episode
+  masked with the policy, value and encoder frozen; only the estimator trains, on the student's own rollouts.
+  With ``--osi`` this is UP-OSI (the estimator predicts the privileged values, the frozen policy reads them).
+
+``--privileged-scale standard`` standardizes the randomized dynamics (from their uniform ranges) before they enter
+the encoder, like the velocities that NormalizeObservation already standardizes.
 
 At the end the policy is evaluated with the privileged values masked (deployable) and visible, and the
 held-out R² of a probe that predicts each privileged group from the estimator latent ẑ (and the encoder
@@ -82,6 +88,19 @@ class Switchable:
         return getattr(self.inner, name)
 
 
+class TwoPhase:
+    """RMA: no episode masked before ``switch`` (fraction of training), every episode masked after it."""
+
+    def __init__(self, switch: float) -> None:
+        self.switch, self.progress = switch, 0.0
+
+    def mask_probability(self) -> float:
+        return float(self.progress >= self.switch)
+
+    def set_progress(self, progress: float) -> None:
+        self.progress = progress
+
+
 class Fixed:
     def __init__(self, p: float) -> None:
         self.p = p
@@ -111,21 +130,29 @@ def make_randomize(name: str, task: Task):
     return randomize
 
 
-def make_privileged(task: Task):
+def make_privileged(task: Task, standardize: bool = False):
+    low, high = np.array(task.ranges, dtype=np.float32).T
+    mean, std = (low + high) / 2, (high - low) / np.sqrt(12)  # moments of the uniform ranges
+
     def privileged(env: gymnasium.Env) -> np.ndarray:
         full = env.get_full_obs()  # normalized observation before the velocities are hidden
-        return np.concatenate([full[task.velocity_indices], env.unwrapped._privileged_dynamics]).astype(np.float32)
+        dynamics = env.unwrapped._privileged_dynamics
+        if standardize:
+            dynamics = (dynamics - mean) / std
+        return np.concatenate([full[task.velocity_indices], dynamics]).astype(np.float32)
 
     return privileged
 
 
-def make_env(name: str, task: Task, curriculum, seed: int, actions: bool = False) -> gymnasium.Env:
+def make_env(
+    name: str, task: Task, curriculum, seed: int, actions: bool = False, standardize: bool = False
+) -> gymnasium.Env:
     env = gymnasium.make(name)
     env = gymnasium.wrappers.NormalizeObservation(env)
     env = PomdpWrapper(env, hidden_obs_indices=task.velocity_indices, obs_noise_std=0.01, seed=seed)
     return PrivilegedHistoryWrapper(
         env,
-        privileged_fn=make_privileged(task),
+        privileged_fn=make_privileged(task, standardize),
         privileged_dim=len(task.velocity_indices) + len(task.dynamics),
         history_length=task.history,
         curriculum=curriculum,
@@ -169,7 +196,7 @@ def _normalizer(env: gymnasium.Env) -> gymnasium.wrappers.NormalizeObservation:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", choices=list(TASKS), default="Pendulum-v1")
-    parser.add_argument("--mode", choices=["curriculum", "gated", "masked", "visible"], default="gated")
+    parser.add_argument("--mode", choices=["curriculum", "gated", "masked", "visible", "rma"], default="gated")
     parser.add_argument("--timesteps", type=int, default=None, help="total env steps (default: per task)")
     parser.add_argument("--num-envs", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
@@ -180,6 +207,11 @@ def main() -> None:
     parser.add_argument("--encoder-loss-scale", type=float, default=0.1, help="λ of ||z - sg(ẑ)||² (0: z free)")
     parser.add_argument("--estimator", choices=list(ESTIMATORS), default="mlp", help="history estimator architecture")
     parser.add_argument("--sysid-loss-scale", type=float, default=0.0, help="supervised system-ID loss (0: off)")
+    parser.add_argument("--osi", action="store_true", help="UP-OSI: the estimator predicts the privileged values")
+    parser.add_argument("--whiten", action="store_true", help="estimator loss in whitened z coordinates")
+    parser.add_argument("--contrastive-loss-scale", type=float, default=0.0, help="InfoNCE on ẑ, same dynamics = positive")
+    parser.add_argument("--privileged-scale", choices=["raw", "standard"], default="raw", help="dynamics scaling")
+    parser.add_argument("--rma-switch", type=float, default=0.75, help="rma mode: fraction of training in phase 1")
     args = parser.parse_args()
     set_seed(args.seed)
     task = TASKS[args.task]
@@ -192,11 +224,12 @@ def main() -> None:
         "gated": RewardGatedMaskCurriculum(step=0.1, tolerance=0.1, patience=3, return_scale=10.0, deadline=0.8),
         "masked": Fixed(1.0),
         "visible": Fixed(0.0),
+        "rma": TwoPhase(args.rma_switch),
     }[args.mode]
     curriculum = Switchable(inner)
 
     vec_env = gymnasium.vector.SyncVectorEnv(
-        [lambda i=i: make_env(args.task, task, curriculum, args.seed + i, args.actions) for i in range(args.num_envs)],
+        [lambda i=i: make_env(args.task, task, curriculum, args.seed + i, args.actions, args.privileged_scale == "standard") for i in range(args.num_envs)],
         autoreset_mode=gymnasium.vector.AutoresetMode.SAME_STEP,
     )
     env = wrap_env(vec_env)
@@ -209,6 +242,7 @@ def main() -> None:
         "policy": PrivilegedGaussianPolicy(
             env.observation_space, env.action_space, device, layout=layout, hidden=128,
             estimator=args.estimator, sysid_head=args.sysid_loss_scale > 0,
+            osi=args.osi, contrastive_head=args.contrastive_loss_scale > 0,
         ),
         "value": PrivilegedValue(env.observation_space, env.action_space, device, layout=layout, hidden=128),
     }
@@ -232,11 +266,19 @@ def main() -> None:
         value_preprocessor_kwargs={"size": 1, "device": device},
         encoder_loss_scale=args.encoder_loss_scale,
         sysid_loss_scale=args.sysid_loss_scale,
+        estimator_whiten=args.whiten,
+        contrastive_loss_scale=args.contrastive_loss_scale,
+        contrastive_dims=list(range(n_vel, n_vel + len(task.dynamics))),
+        freeze_policy_after=args.rma_switch if args.mode == "rma" else None,
     )
     variant = (f"_H{task.history}" if args.history is not None else "") + ("_act" if args.actions else "")
     variant += f"_lam{args.encoder_loss_scale:g}" if args.encoder_loss_scale != 0.1 else ""
     variant += f"_{args.estimator}" if args.estimator != "mlp" else ""
     variant += f"_sysid{args.sysid_loss_scale:g}" if args.sysid_loss_scale > 0 else ""
+    variant += "_osi" if args.osi else ""
+    variant += "_white" if args.whiten else ""
+    variant += f"_con{args.contrastive_loss_scale:g}" if args.contrastive_loss_scale > 0 else ""
+    variant += "_std" if args.privileged_scale == "standard" else ""
     run_name = f"{args.task}_{args.mode}{variant}_seed{args.seed}"
     cfg.experiment.directory = args.log_dir
     cfg.experiment.experiment_name = run_name
@@ -270,6 +312,10 @@ def main() -> None:
         "encoder_loss_scale": args.encoder_loss_scale,
         "estimator": args.estimator,
         "sysid_loss_scale": args.sysid_loss_scale,
+        "osi": args.osi,
+        "whiten": args.whiten,
+        "contrastive_loss_scale": args.contrastive_loss_scale,
+        "privileged_scale": args.privileged_scale,
         "return_masked": masked,
         "return_visible": visible,
         "final_mask_probability": final_p,
