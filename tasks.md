@@ -152,6 +152,10 @@
 - [x] Belief debug video (`skrl/envs/cube_push/render.py`, `examples/contact_rich_uncertainty/cube_push_wafr08.py`):
   overview / top / pusher-follow + belief plots, belief tiles, MAP, goal + tolerance, table limit, WRT path.
   `runs/cube_push_wafr08/videos/wafr08_seed*.mp4`. Tests `tests/envs/test_cube_push.py` (5).
+- [x] Separate deck with the renders (`docs/belief_methods/build_cube_push_wafr08_slides.py`, keyframes in
+  `docs/belief_methods/cube_push/`): Google Slides "Cube push WAFR08 belief renders"
+  (https://docs.google.com/presentation/d/1xjRNSOlTSZCZv43dooe_DHhNCsMzQ9ptLkDon3rv2Kc/edit) with the three mp4s
+  embedded from Drive folder https://drive.google.com/drive/folders/1KVtaCvJHo__JFWIpUJOHmmy6efQpm_dB.
 - [ ] Physics levels are coarse (3 per parameter) and μ·m is nearly degenerate from push forces alone; probes rarely
   fire. Next: Audit, GenAIF, quasi-static and RSS20 on the same env.
 
