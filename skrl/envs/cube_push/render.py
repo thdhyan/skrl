@@ -4,6 +4,8 @@ Panels: overview camera, top-down camera, follow camera on the pusher, belief pl
 the true values, entropy and P(goal) over time). In the 3D views (transparent markers): the most likely belief cells
 as flat orange tiles (opacity ∝ mass), the MAP state w* as a blue box, the goal pose as a green box with its
 position tolerance disc, the table limit the cube must stay inside in red, and the current WRT's pusher path in yellow.
+A planner can add its own markers through ``extra_markers()`` (``(kind "box" | "sphere", size, pos, yaw, rgba)``),
+e.g. Audit's retained set, RSS20's particles and GMM modes, the quasi-static plan's mean poses.
 """
 from __future__ import annotations
 
@@ -155,6 +157,9 @@ class BeliefVideo:
         corners = [(-tx, -ty), (tx, -ty), (tx, ty), (-tx, ty)]
         for a, b in zip(corners, corners[1:] + corners[:1]):
             _line(scene, [*a, 0.003], [*b, 0.003], 0.003, [1.0, 0.1, 0.1, 0.5])
+        for kind, size, pos, yaw, rgba in getattr(self.planner, "extra_markers", list)():
+            gtype = mujoco.mjtGeom.mjGEOM_BOX if kind == "box" else mujoco.mjtGeom.mjGEOM_SPHERE
+            _add(scene, gtype, size, pos, _quat_mat(yaw), rgba)
         if self.wrt is not None:
             pts = np.concatenate([self.wrt.start[None], self.wrt.targets])[::3]
             for p in pts:

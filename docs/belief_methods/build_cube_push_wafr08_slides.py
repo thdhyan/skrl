@@ -1,7 +1,7 @@
 """Build docs/belief_methods/Cube_push_WAFR08.pptx: the MuJoCo cube push with WAFR08 and its belief renders
 (uploaded to Google Slides afterwards; the mp4s are embedded there from Drive).
 
-    MUJOCO_GL=egl .venv/bin/python examples/contact_rich_uncertainty/cube_push_wafr08.py --seed {0,1,2}
+    MUJOCO_GL=egl .venv/bin/python examples/contact_rich_uncertainty/cube_push_belief.py --method wafr08 --seed {0,1,2}
     .venv/bin/python docs/belief_methods/build_cube_push_wafr08_slides.py
 """
 import json
@@ -196,7 +196,7 @@ text(s, Inches(0.6), Inches(1.3), Inches(12.2), Inches(5.9), [
     "Next",
     "  Audit, GenAIF, quasi-static belief dynamics and RSS20 on the same env, same video tooling",
     "Code: skrl/envs/cube_push/{sim,env,wafr08,render}.py, skrl/belief/grid_belief.py, "
-    "examples/contact_rich_uncertainty/cube_push_wafr08.py (commit dc5467f5)",
+    "examples/contact_rich_uncertainty/cube_push_belief.py --method wafr08 (first version in commit dc5467f5)",
 ], size=17)
 
 out = os.path.join(HERE, "Cube_push_WAFR08.pptx")

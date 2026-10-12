@@ -73,8 +73,11 @@ deciders for WAFR08 (IG vs failure probability), Audit (retained set + coverage 
 quasi-static (γ_k bound, CMA-ES) and RSS20 (BeliefDQN). Encoders for camera / point-cloud / language tasks are in
 `skrl/models/torch/encoders.py` (done 2026-10-12); next is a real DINOv2/CLIP run on a server.
 Cube-push env + WAFR08 done 2026-10-12 (`skrl/envs/cube_push/`, grid belief in `skrl/belief/grid_belief.py`, belief
-video example in `examples/contact_rich_uncertainty/cube_push_wafr08.py`). Next on the same env: Audit, GenAIF,
-quasi-static, RSS20.
+video example now `examples/contact_rich_uncertainty/cube_push_belief.py --method wafr08`). Audit, GenAIF,
+quasi-static and RSS20 test implementations on the same env added 2026-10-12 (`skrl/envs/cube_push/{audit,genaif,
+quasistatic,rss20}.py`, one runner `cube_push_belief.py --method`, RSS20 DQN trained with
+`cube_push_rss20_train.py` on dl); deck `docs/belief_methods/Cube_push_belief_methods.pptx` with the
+observation / action / reward definitions (tasks.md §7i). Planner evals run on zz-bw / dl, not the laptop.
 
 ### 6. Housekeeping
 

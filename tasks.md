@@ -149,7 +149,7 @@
   belief, multilinear splat, IG on the next-state belief): guarded touches localize the pose, goal pushes run when
   b ∈ BPre (P ≥ 1 − δ, 2× waypoint tolerance), probes (v1/v2 force ≈ μmg + k_d v, peak ≈ m a) only once the pose
   entropy < 1.5 nats. Seeds 0/1/2: 3/3 success in 21/27/22 WRTs (1.3 cm 1.9°, 0.4 cm 4.8°, 0.4 cm 5.5°).
-- [x] Belief debug video (`skrl/envs/cube_push/render.py`, `examples/contact_rich_uncertainty/cube_push_wafr08.py`):
+- [x] Belief debug video (`skrl/envs/cube_push/render.py`, `examples/contact_rich_uncertainty/cube_push_belief.py --method wafr08`):
   overview / top / pusher-follow + belief plots, belief tiles, MAP, goal + tolerance, table limit, WRT path.
   `runs/cube_push_wafr08/videos/wafr08_seed*.mp4`. Tests `tests/envs/test_cube_push.py` (5).
 - [x] Separate deck with the renders (`docs/belief_methods/build_cube_push_wafr08_slides.py`, keyframes in
@@ -158,6 +158,37 @@
   embedded from Drive folder https://drive.google.com/drive/folders/1KVtaCvJHo__JFWIpUJOHmmy6efQpm_dB.
 - [ ] Physics levels are coarse (3 per parameter) and μ·m is nearly degenerate from push forces alone; probes rarely
   fire. Next: Audit, GenAIF, quasi-static and RSS20 on the same env.
+
+## 7i. Audit, GenAIF, quasi-static and RSS20 on the cube push (test implementations, 2026-10-12)
+
+Same env, same WRT library (touch / probe / goal push from `wafr08.py`), same `BeliefVideo`; each method is a
+planner subclass that changes the belief, the model or the decision rule. One runner
+`examples/contact_rich_uncertainty/cube_push_belief.py --method {wafr08,audit,genaif,quasistatic,rss20}`.
+
+- [x] Audit (`audit.py`): grid belief; fixed probe schedule (touches cycling faces at w*, then force probes) until
+  the retained set C_{k,ν} (ν = 0.8) is tight (weighted RMS ≤ 2 cm and ≤ 15°) or the budget (5) runs out; commit =
+  scenario-minimax goal push over C; audit log per commit: true state in C (coverage), true outcome inside the
+  predicted outcome hull, predicted vs realized miss rate. Many commits instead of the paper's single one.
+  Seeds 0/1/2: 1/3 success (1.6 cm 11°, 1.8 cm 2°, 3.6 cm 29°), coverage 0.23 / 0.27 / 0.83: grid belief overconfident.
+- [x] GenAIF (`genaif.py`): learned Gaussian generative model (MLP, 45,830 MuJoCo WRT samples, contact acc 0.98,
+  travel MAE 2.5 mm; stand-in for the CVAE) gives predictions and likelihood; physics levels switch with Markov
+  matrix M; action = argmin EFE = E[goal cost] − λ IG with risk filter P(fail) ≤ 0.2; replan after every WRT.
+  Seeds 0/1/2: 0/3 (16.8 cm 38°, 1.9 cm 17°, 3.0 cm 14°); learned σ keeps the belief broad, budget ends every run.
+- [x] Quasi-static (`quasistatic.py`): touches localize (WAFR08 IG) while H(pose) > 3 nats, then CMA-ES over K = 3
+  pushes (approach angle, offset, length ≥ 2 cm) on nominal particle rollouts, cost Π exp(−(1−γ_k)/(K−1)) +
+  λ_c Σ max(γ_k − 1, 0) (λ_c = 10, linear instead of the paper's 10³ switch) + d²/tol_p² + (Δψ/tol_ψ)²; plan run
+  open loop, then re-localize. Seeds 0/1/2: 1/3 (1.0 cm 0°, 2.2 cm 12°, 0.6 cm 16°).
+- [x] RSS20 (`rss20.py`, `examples/contact_rich_uncertainty/cube_push_rss20_train.py`): 128 particles over pose +
+  physics simulated per controller, 2-component GMM b̃ (obs Box(34)), 16-controller bank (Discrete(16)), dueling
+  double DQN (ResNet Q-net from `belief_dqn/models.py`), r = −1 + potential shaping − 10 off table, γ 0.98; trained on
+  dl, 48 envs × 1500 steps = 72k transitions, ~1.75 h CPU. Seeds 0/1/2: 3/3 in 6–7 controllers (2.0 cm 5°, 1.9 cm 7°, 0.7 cm 10°), but it stops on the true
+  success signal (privileged, as in the paper), which the other methods do not get.
+- [x] Evals run on zz-bw (Audit, GenAIF, quasi-static) and dl (RSS20) after parallel local runs crashed the laptop.
+- [x] Deck `docs/belief_methods/build_cube_push_methods_slides.py` → Google Slides "Cube push: belief methods"
+  (https://docs.google.com/presentation/d/1DKeFUxc0kjjW7z2-JCN2PpO_0Iyt8pndxOFEUvYv95o/edit): summary table, env
+  definitions (obs Box(10), action Box(3), reward, termination, hidden state), controller-level definitions, per
+  method rule + seed-1 keyframes + embedded seed 0/1/2 videos (Drive folder 1KVtaCvJHo__JFWIpUJOHmmy6efQpm_dB),
+  distance comparison, limits; 12 videos embedded.
 
 ## 8. CartPole physics extensions (answered below)
 

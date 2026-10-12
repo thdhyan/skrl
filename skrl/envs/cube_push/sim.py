@@ -186,7 +186,7 @@ def rollout(models: list[mujoco.MjModel], states: np.ndarray, controls: np.ndarr
     per-state controls ``[K, nstep, nu]``; returns sensordata at the end of every physics step, ``[K, nstep, nsens]``."""
     import os
 
-    nthread = min(os.cpu_count() or 1, 16)
+    nthread = int(os.environ.get("CUBE_PUSH_THREADS", min(os.cpu_count() or 1, 16)))
     while len(_DATAS) < nthread:
         _DATAS.append(mujoco.MjData(models[0]))
     controls = controls if controls.ndim == 3 else controls[None]
