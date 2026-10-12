@@ -148,3 +148,50 @@ class RewardGatedMaskCurriculum:
     def _rebase(self, r: float) -> None:
         self.reference = r
         self.window = []
+
+
+class FixedMaskCurriculum:
+    """Constant mask probability ``p`` (``0``: always visible, ``1``: always masked)."""
+
+    def __init__(self, p: float = 1.0) -> None:
+        self.p = p
+
+    def mask_probability(self, progress: float | None = None) -> float:
+        return self.p
+
+    def set_progress(self, progress: float) -> None:
+        pass
+
+
+class TwoPhaseMaskCurriculum:
+    """RMA: no episode masked before ``switch`` (fraction of training), every episode masked after it."""
+
+    def __init__(self, switch: float = 0.75) -> None:
+        self.switch, self.progress = switch, 0.0
+
+    def mask_probability(self, progress: float | None = None) -> float:
+        return float((self.progress if progress is None else progress) >= self.switch)
+
+    def set_progress(self, progress: float) -> None:
+        self.progress = progress
+
+
+CURRICULA = {
+    "SoftmaxMaskCurriculum": SoftmaxMaskCurriculum,
+    "RewardGatedMaskCurriculum": RewardGatedMaskCurriculum,
+    "FixedMaskCurriculum": FixedMaskCurriculum,
+    "TwoPhaseMaskCurriculum": TwoPhaseMaskCurriculum,
+}
+
+
+def make_curriculum(spec):
+    """Build a curriculum from a config entry: ``None``, an instance, or ``{"class": <name>, **kwargs}`` where
+    ``<name>`` is a key of :data:`CURRICULA` (case-insensitive)."""
+    if spec is None or not isinstance(spec, dict):
+        return spec
+    kwargs = dict(spec)
+    name = kwargs.pop("class", "SoftmaxMaskCurriculum")
+    classes = {k.lower(): v for k, v in CURRICULA.items()}
+    if name.lower() not in classes:
+        raise ValueError(f"unknown curriculum '{name}', expected one of {list(CURRICULA)}")
+    return classes[name.lower()](**kwargs)

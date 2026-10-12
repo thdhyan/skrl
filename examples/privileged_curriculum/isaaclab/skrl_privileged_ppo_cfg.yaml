@@ -1,0 +1,75 @@
+# PrivilegedPPO for Isaac Lab through the skrl Runner (scripts/reinforcement_learning/skrl/train.py).
+# Register it in the task's gym.register kwargs:
+#   "skrl_privileged_ppo_cfg_entry_point": f"{agents.__name__}:skrl_privileged_ppo_cfg.yaml"
+# and train with:
+#   python scripts/reinforcement_learning/skrl/train.py --task <Task> --agent skrl_privileged_ppo_cfg_entry_point
+# The privileged values come from the Isaac Lab "critic" observation group (env.state()), or from privileged_fn.
+seed: 42
+
+# Wraps the env in skrl.envs.wrappers.torch.PrivilegedHistoryVecWrapper:
+# observation = [o_t | o_{t-H}..o_{t-1} | privileged | mask], built on the GPU for all envs
+privileged_history:
+  history_length: 32
+  include_last_action: true     # history of (o, a) pairs, as in RMA
+  privileged_indices: null      # subset of the critic-group vector to use as privileged values (null: all)
+  privileged_fn: null           # or "my_pkg.my_module:privileged" -> f(env) -> Tensor[num_envs, P]
+
+models:
+  separate: true
+  policy:
+    class: PrivilegedGaussianPolicy   # PrivilegedCategoricalPolicy for discrete actions
+    latent_dim: 8
+    hidden: 128
+    estimator: transformer            # history estimator: mlp | conv1d | lstm | transformer
+  value:
+    class: PrivilegedValue            # asymmetric critic on [o_t, privileged]
+    hidden: 128
+
+memory:
+  class: RandomMemory
+  memory_size: -1  # automatically determined (same as agent:rollouts)
+
+agent:
+  class: PrivilegedPPO
+  # system-identification preset: roa | roa_lam0 | sysid | contrastive | whiten | osi | rma | uposi
+  # (skrl.agents.torch.privileged_ppo.STRATEGIES); keys set below override the preset
+  strategy: sysid
+  curriculum:                         # mask probability per episode (rma / uposi default to TwoPhaseMaskCurriculum)
+    class: SoftmaxMaskCurriculum      # | RewardGatedMaskCurriculum | FixedMaskCurriculum | TwoPhaseMaskCurriculum
+    start: 0.1
+    end: 0.8
+  privileged_groups: null             # e.g. {velocities: [0, 1, 2], mass: [3]} for the probe / sysid R² logs
+  contrastive_dims: null              # privileged dims constant within an episode (needed by strategy: contrastive)
+  rollouts: 24
+  learning_epochs: 5
+  mini_batches: 4
+  discount_factor: 0.99
+  gae_lambda: 0.95
+  learning_rate: 3.0e-04
+  learning_rate_scheduler: KLAdaptiveLR
+  learning_rate_scheduler_kwargs:
+    kl_threshold: 0.008
+  observation_preprocessor: null      # must stay null: it would rescale the mask flag
+  value_preprocessor: RunningStandardScaler
+  value_preprocessor_kwargs: null
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 1.0
+  ratio_clip: 0.2
+  value_clip: 0.2
+  entropy_loss_scale: 0.0
+  value_loss_scale: 1.0
+  kl_threshold: 0.0
+  rewards_shaper_scale: 1.0
+  time_limit_bootstrap: false
+  # logging and checkpoint
+  experiment:
+    directory: "privileged_ppo"
+    experiment_name: ""
+    write_interval: auto
+    checkpoint_interval: auto
+
+trainer:
+  class: SequentialTrainer
+  timesteps: 36000
+  environment_info: log

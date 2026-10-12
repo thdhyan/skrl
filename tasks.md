@@ -122,6 +122,10 @@
 - [x] Slides (`build_sysid_slides.py`) → [Google Slides](https://docs.google.com/presentation/d/14fJ3Bh9L9cFB9bukCwd-6vyzbkuNAJnS5_WehLsm1Tc/edit); write-up → [Google Doc](https://docs.google.com/document/d/1WaQWwzApMI9jwM4obc2njVuPb743bSdufxjB7laiVXE/edit).
 - [ ] Supervised system-ID head (regress e_t from history) and wider dynamics ranges / lower noise.
 - [ ] Temporal-transformer estimator vs MLP (see `docs/transformer_rl_robotics.md`).
+- [x] Isaac Lab YAML / `Runner` support: `PrivilegedPPO` (strategy presets, curriculum, estimator arch), `BeliefPPO` / `BeliefDQN` (belief section or import-string factory), `PrivilegedHistoryVecWrapper`; example YAMLs in `examples/privileged_curriculum/isaaclab/`, docs in `HANDOFF_ISAACLAB_BELIEF.md` §8.7.
+- [x] Isaac Lab smoke run of `skrl_privileged_ppo_cfg.yaml` on a registered task (with debug video): zz-bw, Cartpole
+  with hidden velocities (`examples/privileged_curriculum/isaaclab/cartpole_privileged_smoke.py` via `zzbw_smoke.sh`),
+  sysid + transformer estimator from the registry YAML, mask p 0 -> 1, checkpoint + 2 clips, frames checked (2026-10-11).
 
 ## 8. CartPole physics extensions (answered below)
 

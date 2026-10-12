@@ -1,0 +1,50 @@
+# BeliefPPO through the skrl Runner. The agent tracks one particle filter, so the env must have num_envs = 1
+# (python scripts/reinforcement_learning/skrl/train.py --task <Task> --num_envs 1 --agent skrl_belief_ppo_cfg_entry_point)
+seed: 42
+
+# particle filter built by the Runner (or set agent.belief_factory: "my_pkg.my_module:make_filter")
+belief:
+  class: ParticleFilter                 # or "my_pkg.my_module:MyBelief"
+  num_particles: 300
+  state_dim: 10
+  num_gmm_components: 2
+  n_substeps: 1                         # backend.step(particles, control, n_substeps)
+  sigma_enc: 1.0                        # backend.get_measurement(particles, sigma_enc)
+  backend:                              # DynamicsBackend class or factory; gets env / device if it accepts them
+    class: skrl.belief.backends.stub_backend:StubBackend
+    n_joints: 2
+
+models:
+  separate: true
+  policy:
+    class: ResNetCategoricalPolicy      # input: compressed belief b̃ (GMM weights, means, variances)
+    resnet_blocks: 4
+    width: 64
+  value:
+    class: ResNetValue
+    resnet_blocks: 4
+    width: 64
+
+memory:
+  class: RandomMemory
+  memory_size: -1
+
+agent:
+  class: BeliefPPO
+  belief_prior_fn: null                 # "my_pkg.my_module:prior" -> f(obs) -> particles [NP, state_dim]
+  belief_true_state_fn: null            # "my_pkg.my_module:true_state" -> f(infos) -> Tensor[state_dim]
+  rollouts: 16
+  learning_epochs: 8
+  mini_batches: 2
+  discount_factor: 0.98
+  learning_rate: 1.0e-04
+  experiment:
+    directory: "belief_ppo"
+    experiment_name: ""
+    write_interval: auto
+    checkpoint_interval: auto
+
+trainer:
+  class: SequentialTrainer
+  timesteps: 10000
+  environment_info: log

@@ -4,7 +4,11 @@ from typing import Any, Literal, Type
 
 import copy
 import dataclasses
+import importlib
+import inspect
 import math  # noqa
+
+import gymnasium
 
 from skrl import logger
 from skrl.agents.torch import Agent
@@ -15,6 +19,26 @@ from skrl.resources.preprocessors.torch import RunningStandardScaler  # noqa
 from skrl.resources.schedulers.torch import KLAdaptiveLR  # noqa
 from skrl.trainers.torch import Trainer
 from skrl.utils import set_seed
+
+
+def _import_string(name: str) -> Any:
+    """Import ``"package.module:attribute"`` (the attribute may be dotted, e.g. ``"module:Class.method"``)."""
+    module, _, attribute = name.partition(":")
+    obj = importlib.import_module(module)
+    for part in attribute.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _call(fn: Any, **kwargs) -> Any:
+    """Call ``fn`` with the keyword arguments its signature accepts (all of them if it takes ``**kwargs``)."""
+    parameters = inspect.signature(fn).parameters
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        kwargs = {k: v for k, v in kwargs.items() if k in parameters}
+    return fn(**kwargs)
+
+
+_BELIEF_CALLABLES = ["belief_factory", "belief_prior_fn", "belief_true_state_fn", "belief_state_to_position"]
 
 
 class Runner:
@@ -35,6 +59,18 @@ class Runner:
 
         # set random seed
         set_seed(self._cfg.get("seed", None))
+
+        # PrivilegedPPO: strategy preset, shared mask curriculum and observation-history wrapper
+        self._curriculum = None
+        self._privileged_layout = None
+        # BeliefPPO / BeliefDQN: belief tracker and the callables named in the cfg
+        self._belief_callables = {}
+        self._belief_space = None
+        agent_class = self._cfg.get("agent", {}).get("class", "").lower()
+        if agent_class == "privilegedppo":
+            self._env, self._cfg = self._setup_privileged(self._env, self._cfg)
+        elif agent_class in ["beliefppo", "beliefdqn"]:
+            self._cfg = self._setup_belief(self._env, self._cfg)
 
         self._models = self._generate_models(self._env, copy.deepcopy(self._cfg))
         self._agent = self._generate_agent(self._env, copy.deepcopy(self._cfg), self._models)
@@ -117,6 +153,121 @@ class Runner:
                 del cfg["agent"]["shared_state_preprocessor_kwargs"]
         return cfg
 
+    def _setup_privileged(self, env: Wrapper, cfg: dict) -> tuple[Wrapper, dict]:
+        """Apply the PrivilegedPPO strategy preset, build the mask curriculum and (optionally) wrap the env.
+
+        Config keys (besides the PrivilegedPPO_CFG fields):
+
+        - ``agent.strategy``: name of a preset in :data:`skrl.agents.torch.privileged_ppo.STRATEGIES` (``roa``,
+          ``sysid``, ``contrastive``, ``whiten``, ``osi``, ``rma``, ``uposi``). Explicit values override it.
+        - ``agent.curriculum``: ``{class: <curriculum name>, **kwargs}`` (e.g. ``SoftmaxMaskCurriculum``).
+        - ``privileged_history``: kwargs of :class:`PrivilegedHistoryVecWrapper` (``history_length``,
+          ``include_last_action``, ``privileged_indices``, ``privileged_fn: "module:function"``). The env is wrapped
+          with it and the privileged models get its ``layout``. Without it, the env must already produce the packed
+          observation and the models need ``layout: {obs_dim, history_length, privileged_dim}``.
+        """
+        from skrl.agents.torch.privileged_ppo import apply_strategy, make_curriculum
+        from skrl.envs.wrappers.torch.privileged_history_vec_wrapper import PrivilegedHistoryVecWrapper
+
+        policy_cfg, agent_cfg = apply_strategy(
+            cfg["agent"].pop("strategy", None), cfg.get("models", {}).get("policy", {}), cfg["agent"]
+        )
+        if "policy" in cfg.get("models", {}):
+            cfg["models"]["policy"] = policy_cfg
+        cfg["agent"] = agent_cfg
+        self._curriculum = make_curriculum(agent_cfg.pop("curriculum", None))
+        history = cfg.pop("privileged_history", None)
+        if history is not None:
+            history = dict(history)
+            privileged_fn = history.pop("privileged_fn", None)
+            env = PrivilegedHistoryVecWrapper(
+                env,
+                curriculum=self._curriculum,
+                privileged_fn=_import_string(privileged_fn) if isinstance(privileged_fn, str) else privileged_fn,
+                **history,
+            )
+            self._privileged_layout = env.layout
+        return env, cfg
+
+    def _setup_belief(self, env: Wrapper, cfg: dict) -> dict:
+        """Resolve the belief callables of a BeliefPPO / BeliefDQN cfg and the belief-input space of its models.
+
+        - ``agent.belief_factory`` (and ``belief_prior_fn``, ``belief_true_state_fn``, ``belief_state_to_position``):
+          ``"module:attribute"`` import strings of the callables.
+        - or a top-level ``belief`` section that builds the particle filter::
+
+            belief:
+              class: ParticleFilter              # or "module:Class" (a Belief subclass)
+              num_particles: 300
+              state_dim: 10
+              num_gmm_components: 2
+              n_substeps: 1                      # passed to backend.step()
+              sigma_enc: 1.0                     # passed to backend.get_measurement()
+              backend:
+                class: skrl.belief.backends.stub_backend:StubBackend   # class or factory, gets env/device if accepted
+                n_joints: 2
+
+        - ``agent.belief_dim``: size of the compressed belief b̃ (the models' input). Default: from the filter.
+        """
+        agent_cfg = cfg["agent"]
+        for key in _BELIEF_CALLABLES:
+            value = agent_cfg.pop(key, None)
+            self._belief_callables[key] = _import_string(value) if isinstance(value, str) else value
+        if self._belief_callables["belief_factory"] is None and "belief" in cfg:
+            self._belief_callables["belief_factory"] = self._belief_factory_from_cfg(env, dict(cfg.pop("belief")))
+        belief_dim = agent_cfg.pop("belief_dim", None)
+        if belief_dim is None:
+            if self._belief_callables["belief_factory"] is None:
+                raise ValueError("Belief agents need 'agent.belief_factory' or a 'belief' section in the cfg")
+            belief_dim = self._belief_callables["belief_factory"]().belief_dim
+        self._belief_space = gymnasium.spaces.Box(low=-math.inf, high=math.inf, shape=(belief_dim,))
+        return cfg
+
+    def _belief_factory_from_cfg(self, env: Wrapper, spec: dict) -> Any:
+        from skrl.belief.torch.particle_filter import ParticleFilter
+
+        belief_class = spec.pop("class", "ParticleFilter")
+        belief_class = ParticleFilter if belief_class.lower() == "particlefilter" else _import_string(belief_class)
+        backend_spec = dict(spec.pop("backend"))
+        backend_class = backend_spec.pop("class")
+        backend_class = _import_string(backend_class) if isinstance(backend_class, str) else backend_class
+        device = spec.pop("device", env.device)
+        n_substeps, sigma_enc = spec.pop("n_substeps", 1), spec.pop("sigma_enc", 1.0)
+        backend = _call(backend_class, env=env, device=device, **backend_spec)
+
+        def factory():
+            return belief_class(
+                motion_model_fn=lambda particles, control: backend.step(particles, control, n_substeps=n_substeps),
+                measurement_model_fn=lambda particles, measurement: backend.get_measurement(
+                    particles, sigma_enc=sigma_enc
+                ),
+                device=device,
+                **spec,
+            )
+
+        return factory
+
+    def _instantiate_model(self, model_class: Any, role: str, kwargs: dict, **spaces) -> Model:
+        """Instantiate a model: skrl instantiator functions take every argument, model classes (e.g.
+        ``PrivilegedGaussianPolicy``) only the ones in their signature. Privileged models get the env ``layout``
+        (or build it from a ``layout`` dict), belief models get the compressed-belief space as observation space."""
+        if not inspect.isclass(model_class):
+            return model_class(**spaces, **kwargs)
+        parameters = inspect.signature(model_class).parameters
+        if "layout" in parameters:
+            from skrl.agents.torch.privileged_ppo import ObsLayout
+
+            layout = kwargs.get("layout", self._privileged_layout)
+            if layout is None:
+                raise ValueError(
+                    f"The 'models.{role}' model needs a 'layout' (or a 'privileged_history' section in the cfg)"
+                )
+            kwargs["layout"] = ObsLayout(**layout) if isinstance(layout, dict) else layout
+        if self._belief_space is not None:
+            spaces["observation_space"] = self._belief_space
+        spaces = {k: v for k, v in spaces.items() if k in parameters}  # e.g. no state_space
+        return model_class(**spaces, **kwargs)
+
     def _component(self, name: str) -> Type:
         """Get skrl component (e.g.: agent, trainer, etc..) from string identifier.
 
@@ -124,11 +275,20 @@ class Runner:
         """
         from skrl.agents.torch.a2c import A2C, A2C_CFG
         from skrl.agents.torch.amp import AMP, AMP_CFG
+        from skrl.agents.torch.belief_dqn import BeliefDQN, BeliefDQN_CFG, ResNetDuelingQNetwork
+        from skrl.agents.torch.belief_ppo import BeliefPPO, BeliefPPO_CFG, ResNetCategoricalPolicy, ResNetValue
         from skrl.agents.torch.cem import CEM, CEM_CFG
         from skrl.agents.torch.ddpg import DDPG, DDPG_CFG
         from skrl.agents.torch.ddqn import DDQN, DDQN_CFG
         from skrl.agents.torch.dqn import DQN, DQN_CFG
         from skrl.agents.torch.ppo import PPO, PPO_CFG
+        from skrl.agents.torch.privileged_ppo import (
+            PrivilegedCategoricalPolicy,
+            PrivilegedGaussianPolicy,
+            PrivilegedPPO,
+            PrivilegedPPO_CFG,
+            PrivilegedValue,
+        )
         from skrl.agents.torch.rpo import RPO, RPO_CFG
         from skrl.agents.torch.sac import SAC, SAC_CFG
         from skrl.agents.torch.td3 import TD3, TD3_CFG
@@ -154,6 +314,13 @@ class Runner:
             "deterministicmixin": deterministic_model,
             "multivariategaussianmixin": multivariate_gaussian_model,
             "shared": shared_model,
+            # model classes (instantiated with the spaces, the device and the remaining cfg as kwargs)
+            "privilegedgaussianpolicy": PrivilegedGaussianPolicy,
+            "privilegedcategoricalpolicy": PrivilegedCategoricalPolicy,
+            "privilegedvalue": PrivilegedValue,
+            "resnetcategoricalpolicy": ResNetCategoricalPolicy,
+            "resnetvalue": ResNetValue,
+            "resnetduelingqnetwork": ResNetDuelingQNetwork,
             # memories
             "randommemory": RandomMemory,
             # agents
@@ -161,6 +328,10 @@ class Runner:
             "a2c_cfg": A2C_CFG,
             "amp": AMP,
             "amp_cfg": AMP_CFG,
+            "beliefdqn": BeliefDQN,
+            "beliefdqn_cfg": BeliefDQN_CFG,
+            "beliefppo": BeliefPPO,
+            "beliefppo_cfg": BeliefPPO_CFG,
             "cem": CEM,
             "cem_cfg": CEM_CFG,
             "ddpg": DDPG,
@@ -171,6 +342,8 @@ class Runner:
             "dqn_cfg": DQN_CFG,
             "ppo": PPO,
             "ppo_cfg": PPO_CFG,
+            "privilegedppo": PrivilegedPPO,
+            "privilegedppo_cfg": PrivilegedPPO_CFG,
             "rpo": RPO,
             "rpo_cfg": RPO_CFG,
             "sac": SAC,
@@ -189,6 +362,8 @@ class Runner:
             "sequentialtrainer_cfg": SequentialTrainerCfg,
         }.get(name.lower())
 
+        if component is None and ":" in name:  # "package.module:attribute", e.g. a custom model class
+            component = _import_string(name)
         if component is None:
             raise ValueError(f"Component '{name}' is not supported in the runner cfg")
         return component
@@ -296,7 +471,7 @@ class Runner:
                                 "Unable to get AMP space via 'env.amp_observation_space'. Using 'env.observation_space' instead"
                             )
                     # print model source
-                    if self._verbose:
+                    if self._verbose and not inspect.isclass(model_class):
                         source = model_class(
                             observation_space=observation_space,
                             state_space=state_spaces[agent_id],
@@ -311,12 +486,14 @@ class Runner:
                         print(source)
                         print("--------------------------------------------------")
                     # instantiate model
-                    models[agent_id][role] = model_class(
+                    models[agent_id][role] = self._instantiate_model(
+                        model_class,
+                        role,
+                        self._process_cfg(models_cfg[role]),
                         observation_space=observation_space,
                         state_space=state_spaces[agent_id],
                         action_space=action_spaces[agent_id],
                         device=device,
-                        **self._process_cfg(models_cfg[role]),
                     )
             # shared models
             else:
@@ -463,7 +640,9 @@ class Runner:
                 "reply_buffer": reply_buffer,
                 "collect_reference_motions": lambda num_samples: env.collect_reference_motions(num_samples),
             }
-        elif agent_class in ["a2c", "cem", "ddpg", "ddqn", "dqn", "ppo", "rpo", "sac", "td3", "trpo"]:
+        elif agent_class in [
+            "a2c", "beliefdqn", "beliefppo", "cem", "ddpg", "ddqn", "dqn", "ppo", "privilegedppo", "rpo", "sac", "td3", "trpo"
+        ]:
             agent_id = possible_agents[0]
             agent_cfg = dataclasses.asdict(self._component(f"{agent_class}_CFG")(**self._process_cfg(cfg["agent"])))
             agent_cfg.get("observation_preprocessor_kwargs", {}).update(
@@ -473,6 +652,10 @@ class Runner:
             agent_cfg.get("value_preprocessor_kwargs", {}).update({"size": 1, "device": device})
             agent_cfg.get("exploration_noise_kwargs", {}).update({"device": device})
             agent_cfg.get("smooth_regularization_noise_kwargs", {}).update({"device": device})
+            # objects shared with the env or holding state: set after `dataclasses.asdict` (it deep-copies values)
+            if agent_class == "privilegedppo":
+                agent_cfg["curriculum"] = self._curriculum
+            agent_cfg.update({k: v for k, v in self._belief_callables.items() if k in agent_cfg})
             agent_kwargs = {
                 "models": models[agent_id],
                 "memory": memories[agent_id],

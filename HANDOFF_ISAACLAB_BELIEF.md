@@ -312,11 +312,11 @@ fact about the bridge:
 > `states` (`state_space = single_observation_space["critic"]`). So the
 > asymmetric belief setup maps 1:1 onto Isaac Lab's group mechanism.
 
-That also settles WHERE the filter lives in this flow: the YAML `Runner`
-hard-imports stock agents only (PPO/DQN/SAC/... — see
-`skrl/utils/runner/torch/runner.py`), so Pattern C (agent-owned filter) does
-NOT fit here. Use **Pattern B**: filter inside the env, belief vector as a
-"policy"-group obs term. Stock YAML PPO then trains on it as-is.
+Where the filter lives in this flow: **Pattern B** (filter inside the env,
+belief vector as a "policy"-group obs term) trains with stock YAML PPO as-is
+and scales to many envs. Since 2026-10-11 the YAML `Runner` also builds
+`BeliefPPO` / `BeliefDQN` (Pattern C, agent-owned filter, `num_envs = 1`) and
+`PrivilegedPPO` (history estimator); see §8.7.
 
 ### 8.1 Observation groups (the part you asked about)
 
@@ -489,9 +489,9 @@ portable helpers `belief_posterior_samples_world` /
 
 ### 8.6 Flow-specific gotchas
 
-- `Runner` resolves only stock agents — do not try `agent.class: BeliefDQN`
-  without extending `skrl/utils/runner/torch/runner.py` first (unnecessary:
-  belief-in-env makes stock PPO/DQN sufficient).
+- `agent.class: BeliefPPO` / `BeliefDQN` work in the `Runner` (§8.7), but the
+  agent tracks one filter: run them with `--num_envs 1`. For many envs keep
+  the filter in the env (Pattern B) and use stock PPO.
 - The value net's `STATES` input exists ONLY if the env defines a `critic`
   group; otherwise set `input: OBSERVATIONS`.
 - `state_preprocessor` normalizes the privileged states; keep it enabled —
@@ -499,6 +499,65 @@ portable helpers `belief_posterior_samples_world` /
 - Isaac Lab auto-resets internally, so `OmniResetWrapper` (§3) must NOT be
   stacked on registered envs — use the `reset_object_pose_omnireset`
   EventTerm (§4). Wrapper-level resets fire once at startup only.
+
+### 8.7 Belief and privileged agents from YAML (`Runner` extensions)
+
+`skrl/utils/runner/torch/runner.py` now knows `PrivilegedPPO`, `BeliefPPO`
+and `BeliefDQN` and their models (`PrivilegedGaussianPolicy`,
+`PrivilegedCategoricalPolicy`, `PrivilegedValue`, `ResNetCategoricalPolicy`,
+`ResNetValue`, `ResNetDuelingQNetwork`). Any model class can also be named
+as `"package.module:Class"`. Example configs:
+`examples/privileged_curriculum/isaaclab/skrl_privileged_ppo_cfg.yaml` and
+`skrl_belief_ppo_cfg.yaml`.
+
+Register and run them like any skrl YAML, selected with `--agent <entry point
+key>`. Isaac Lab 3.0's `--algorithm` accepts only `AMP`/`PPO`/`IPPO`/`MAPPO`, so
+use `--agent`; the log directory is named after `agent.class`
+(`privilegedppo`):
+
+```python
+gym.register(id="Isaac-<Task>-v0", ..., kwargs={
+    "env_cfg_entry_point": ...,
+    "skrl_privileged_ppo_cfg_entry_point": f"{agents.__name__}:skrl_privileged_ppo_cfg.yaml",
+    "skrl_belief_ppo_cfg_entry_point": f"{agents.__name__}:skrl_belief_ppo_cfg.yaml",
+})
+```
+
+```bash
+python scripts/reinforcement_learning/skrl/train.py --task Isaac-<Task>-v0 \
+    --agent skrl_privileged_ppo_cfg_entry_point --headless
+python scripts/reinforcement_learning/skrl/train.py --task Isaac-<Task>-v0 --num_envs 1 \
+    --agent skrl_belief_ppo_cfg_entry_point --headless
+```
+
+As a module in your own script: `Runner(SkrlVecEnvWrapper(env), Runner.load_cfg_from_yaml(path)).run()`.
+A `privileged_fn` can also be a Python callable put into the loaded dict.
+
+Isaac Lab smoke run: `examples/privileged_curriculum/isaaclab/cartpole_privileged_smoke.py`
+(direct Cartpole with the joint velocities hidden and used as privileged
+values; YAML resolved from the gym registry like `train.py --agent`; 3-panel
+debug video with the mask state). Run it on zz-bw with `zzbw_smoke.sh` (pe SIF,
+Isaac Lab 3.0, this fork on `PYTHONPATH`), never on the laptop (an Isaac Lab
+start crashed it).
+
+What the YAML selects:
+
+| Key | Values |
+|---|---|
+| `agent.strategy` (PrivilegedPPO) | `roa`, `roa_lam0`, `sysid`, `contrastive`, `whiten`, `osi`, `rma`, `uposi` (`skrl.agents.torch.privileged_ppo.STRATEGIES`); explicit keys override the preset |
+| `agent.curriculum` | `{class: SoftmaxMaskCurriculum \| RewardGatedMaskCurriculum \| FixedMaskCurriculum \| TwoPhaseMaskCurriculum, ...kwargs}` |
+| `models.policy.estimator` | history estimator: `mlp`, `conv1d`, `lstm`, `transformer` (causal); `latent_dim`, `hidden` |
+| `privileged_history` | wraps the env in `PrivilegedHistoryVecWrapper` (GPU, all envs): `history_length`, `include_last_action`, `privileged_indices`, `privileged_fn: "module:function"`; privileged values default to the `critic` group |
+| `belief` (BeliefPPO/DQN) | particle filter: `class` (`ParticleFilter` or `"module:Class"`), `num_particles`, `state_dim`, `num_gmm_components`, `n_substeps`, `sigma_enc`, `backend: {class: "module:Backend", ...}` (gets `env` / `device` if its signature has them) |
+| `agent.belief_factory`, `belief_prior_fn`, `belief_true_state_fn`, `belief_state_to_position` | `"module:function"` import strings |
+| belief `models` | `ResNet*` over the compressed belief b̃ (input size from the filter, or `agent.belief_dim`), or a custom `"module:Class"` |
+
+Limits: LSTM / transformer apply to the history estimator (the encoder of
+the privileged values and the belief b̃ have no time axis, so they are
+MLP / ResNet). `observation_preprocessor` must stay `null` for PrivilegedPPO
+(it would rescale the mask flag). Tests:
+`tests/utils/test_runner_privileged_belief.py` (fake Isaac Lab env with
+same-step auto-reset and a `critic` state).
 
 ---
 

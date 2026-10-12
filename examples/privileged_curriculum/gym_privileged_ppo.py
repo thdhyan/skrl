@@ -40,6 +40,7 @@ import gymnasium
 
 from skrl.agents.torch.privileged_ppo import (
     ESTIMATORS,
+    FixedMaskCurriculum,
     ObsLayout,
     PrivilegedGaussianPolicy,
     PrivilegedPPO,
@@ -47,6 +48,7 @@ from skrl.agents.torch.privileged_ppo import (
     PrivilegedValue,
     RewardGatedMaskCurriculum,
     SoftmaxMaskCurriculum,
+    TwoPhaseMaskCurriculum,
 )
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.envs.wrappers.torch.pomdp_wrapper import PomdpWrapper
@@ -88,28 +90,7 @@ class Switchable:
         return getattr(self.inner, name)
 
 
-class TwoPhase:
-    """RMA: no episode masked before ``switch`` (fraction of training), every episode masked after it."""
-
-    def __init__(self, switch: float) -> None:
-        self.switch, self.progress = switch, 0.0
-
-    def mask_probability(self) -> float:
-        return float(self.progress >= self.switch)
-
-    def set_progress(self, progress: float) -> None:
-        self.progress = progress
-
-
-class Fixed:
-    def __init__(self, p: float) -> None:
-        self.p = p
-
-    def mask_probability(self) -> float:
-        return self.p
-
-    def set_progress(self, progress: float) -> None:
-        pass
+TwoPhase, Fixed = TwoPhaseMaskCurriculum, FixedMaskCurriculum
 
 
 def make_randomize(name: str, task: Task):

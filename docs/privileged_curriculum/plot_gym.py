@@ -216,3 +216,54 @@ if sysid:
     fig.suptitle("Supervised system-ID head (λ = 0, (o, a) history): estimator architecture and history length")
     fig.tight_layout()
     fig.savefig(os.path.join(out, "09_sysid_estimators.png"))
+
+# <root>/methods: system-ID methods at H = 32, (o, a) history, λ = 0, MLP estimator
+methods = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(root, "methods", "*.json")))]
+if methods:
+    def method_of(r):
+        if r["mode"] == "rma":
+            return "UP-OSI" if r["osi"] else "RMA 2-phase"
+        if r["privileged_scale"] == "raw":
+            return "ROA raw"
+        return ("OSI" if r["osi"] else "whitened" if r["whiten"] else "sysid head" if r["sysid_loss_scale"] > 0
+                else "contrastive" if r["contrastive_loss_scale"] > 0 else "ROA std")
+
+    names = ["ROA raw", "ROA std", "whitened", "sysid head", "contrastive", "OSI", "RMA 2-phase", "UP-OSI"]
+    m_tasks = sorted({r["task"] for r in methods})
+    print("\n| Task | Method | n | Eval masked | Eval visible | ẑ probe R² | ψ(ẑ) / ê R² |")
+    print("|---|---|---|---|---|---|---|")
+    fig, axes = plt.subplots(2, len(m_tasks), figsize=(5.5 * len(m_tasks), 8), dpi=130, squeeze=False)
+    for col, task in enumerate(m_tasks):
+        rs_task = [r for r in methods if r["task"] == task]
+        groups = [k.split(" R2 ")[1] for k in rs_task[0]["probe_r2"] if k.startswith("ẑ")]
+        dyn = groups[1:]
+        labels, r2_dyn, ret = [], [], []
+        for name in names:
+            rs = [r for r in rs_task if method_of(r) == name]
+            if not rs:
+                continue
+            mean_of = lambda key, g: np.mean([r["probe_r2"].get(f"{key} R2 {g}", np.nan) for r in rs])  # noqa: E731
+            probe = ", ".join(f"{g} {mean_of('ẑ', g):.2f}" for g in groups)
+            key = "ê" if rs[0]["osi"] else "ψ(ẑ)" if rs[0]["sysid_loss_scale"] > 0 else None
+            direct = ", ".join(f"{g} {mean_of(key, g):.2f}" for g in groups) if key else "–"
+            m, v = [r["return_masked"] for r in rs], [r["return_visible"] for r in rs]
+            print(f"| {task} | {name} | {len(rs)} | {np.mean(m):.1f} ± {np.std(m):.1f} | "
+                  f"{np.mean(v):.1f} ± {np.std(v):.1f} | {probe} | {direct} |")
+            labels.append(name.replace(" ", "\n", 1))
+            r2_dyn.append([mean_of(key or "ẑ", g) for g in dyn])
+            ret.append((np.mean(m), np.std(m)))
+        x = np.arange(len(labels))
+        for g, group in enumerate(dyn):
+            axes[0][col].bar(x + (g - 0.5) * 0.38, [v[g] for v in r2_dyn], 0.36, label=group)
+        axes[0][col].set_ylabel("dynamics R² (ψ(ẑ) / ê if trained, else ẑ probe)")
+        axes[0][col].set_ylim(-0.1, 1.0)
+        axes[0][col].legend(fontsize=8)
+        axes[1][col].bar(x, [m for m, _ in ret], yerr=[s for _, s in ret], color="#2ca02c", capsize=2)
+        axes[1][col].set_ylabel("eval return, privileged masked")
+        for row in range(2):
+            axes[row][col].set_xticks(x, labels, fontsize=7)
+            axes[row][col].grid(axis="y", alpha=0.3)
+        axes[0][col].set_title(task)
+    fig.suptitle("System-ID methods (MLP estimator, H = 32, (o, a) history, λ = 0, dynamics standardized unless 'raw')")
+    fig.tight_layout()
+    fig.savefig(os.path.join(out, "11_sysid_methods.png"))
