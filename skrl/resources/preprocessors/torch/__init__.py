@@ -1,1 +1,2 @@
 from skrl.resources.preprocessors.torch.running_standard_scaler import RunningStandardScaler
+from skrl.resources.preprocessors.torch.dict_standard_scaler import DictStandardScaler

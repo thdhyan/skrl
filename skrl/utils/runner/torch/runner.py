@@ -15,7 +15,7 @@ from skrl.agents.torch import Agent
 from skrl.envs.wrappers.torch import MultiAgentEnvWrapper, Wrapper
 from skrl.models.torch import Model
 from skrl.resources.noises.torch import GaussianNoise, OrnsteinUhlenbeckNoise  # noqa
-from skrl.resources.preprocessors.torch import RunningStandardScaler  # noqa
+from skrl.resources.preprocessors.torch import DictStandardScaler, RunningStandardScaler  # noqa
 from skrl.resources.schedulers.torch import KLAdaptiveLR  # noqa
 from skrl.trainers.torch import Trainer
 from skrl.utils import set_seed
@@ -294,6 +294,7 @@ class Runner:
         from skrl.agents.torch.td3 import TD3, TD3_CFG
         from skrl.agents.torch.trpo import TRPO, TRPO_CFG
         from skrl.memories.torch import RandomMemory
+        from skrl.models.torch.encoders import EncoderCategoricalPolicy, EncoderDeterministic, EncoderGaussianPolicy
         from skrl.multi_agents.torch.ippo import IPPO, IPPO_CFG
         from skrl.multi_agents.torch.mappo import MAPPO, MAPPO_CFG
         from skrl.trainers.torch import SequentialTrainer, SequentialTrainerCfg
@@ -321,6 +322,9 @@ class Runner:
             "resnetcategoricalpolicy": ResNetCategoricalPolicy,
             "resnetvalue": ResNetValue,
             "resnetduelingqnetwork": ResNetDuelingQNetwork,
+            "encodergaussianpolicy": EncoderGaussianPolicy,
+            "encodercategoricalpolicy": EncoderCategoricalPolicy,
+            "encoderdeterministic": EncoderDeterministic,
             # memories
             "randommemory": RandomMemory,
             # agents
