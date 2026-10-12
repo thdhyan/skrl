@@ -142,7 +142,18 @@
 - [x] Tests: `tests/models/torch/test_encoders.py` (fake DINO/CLIP backbones, Runner PPO end-to-end, checkpoint).
 - [ ] Real DINOv2 / CLIP run: install `open_clip_torch`, torch.hub cache on the server; Isaac Lab camera task.
 - [ ] PrivilegedPPO still refuses observation preprocessors and works on a flat Box (no Dict encoders yet).
-- [ ] Belief methods in a MuJoCo cube-push env in skrl (deck slide 12): waiting for the user's choice of order.
+- [x] MuJoCo cube push with hidden pose + μ, m, k_d (`skrl/envs/cube_push/`): `CubePushEnv` (gymnasium; obs =
+  pusher xyz + force xyz + goal pose, action = pusher target; the command is only the wanted final cube pose),
+  `CubePushModel` (physics variants, batched `mujoco.rollout` hypotheses that reproduce the env trace exactly).
+- [x] WAFR08 (Hsiao et al.) planner `skrl/envs/cube_push/wafr08.py` on `skrl/belief/grid_belief.py` (6-D grid
+  belief, multilinear splat, IG on the next-state belief): guarded touches localize the pose, goal pushes run when
+  b ∈ BPre (P ≥ 1 − δ, 2× waypoint tolerance), probes (v1/v2 force ≈ μmg + k_d v, peak ≈ m a) only once the pose
+  entropy < 1.5 nats. Seeds 0/1/2: 3/3 success in 21/27/22 WRTs (1.3 cm 1.9°, 0.4 cm 4.8°, 0.4 cm 5.5°).
+- [x] Belief debug video (`skrl/envs/cube_push/render.py`, `examples/contact_rich_uncertainty/cube_push_wafr08.py`):
+  overview / top / pusher-follow + belief plots, belief tiles, MAP, goal + tolerance, table limit, WRT path.
+  `runs/cube_push_wafr08/videos/wafr08_seed*.mp4`. Tests `tests/envs/test_cube_push.py` (5).
+- [ ] Physics levels are coarse (3 per parameter) and μ·m is nearly degenerate from push forces alone; probes rarely
+  fire. Next: Audit, GenAIF, quasi-static and RSS20 on the same env.
 
 ## 8. CartPole physics extensions (answered below)
 

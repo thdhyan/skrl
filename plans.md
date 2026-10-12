@@ -72,6 +72,9 @@ Proposed: one MuJoCo planar cube-push env in skrl (hidden pose + μ, m, k_d), sh
 deciders for WAFR08 (IG vs failure probability), Audit (retained set + coverage audit), GenAIF (CVAE + EFE-MPC),
 quasi-static (γ_k bound, CMA-ES) and RSS20 (BeliefDQN). Encoders for camera / point-cloud / language tasks are in
 `skrl/models/torch/encoders.py` (done 2026-10-12); next is a real DINOv2/CLIP run on a server.
+Cube-push env + WAFR08 done 2026-10-12 (`skrl/envs/cube_push/`, grid belief in `skrl/belief/grid_belief.py`, belief
+video example in `examples/contact_rich_uncertainty/cube_push_wafr08.py`). Next on the same env: Audit, GenAIF,
+quasi-static, RSS20.
 
 ### 6. Housekeeping
 
