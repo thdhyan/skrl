@@ -65,6 +65,14 @@ regression target. Compare: history estimator vs belief estimator vs both.
 Only worth more budget with a better token design: tokens per GMM component of b̃, or per time step of the
 history (a temporal transformer as the PrivilegedPPO estimator). The per-dimension design lost to MLPs.
 
+### 5b. Belief methods from the literature + perception encoders
+
+Deck: [Google Slides](https://docs.google.com/presentation/d/1Wz_vzRW_W-nKEJHs8J6sakNd3D9xXgZwO-0cHdmWYxU/edit).
+Proposed: one MuJoCo planar cube-push env in skrl (hidden pose + μ, m, k_d), shared particle / grid filters and
+deciders for WAFR08 (IG vs failure probability), Audit (retained set + coverage audit), GenAIF (CVAE + EFE-MPC),
+quasi-static (γ_k bound, CMA-ES) and RSS20 (BeliefDQN). Encoders for camera / point-cloud / language tasks are in
+`skrl/models/torch/encoders.py` (done 2026-10-12); next is a real DINOv2/CLIP run on a server.
+
 ### 6. Housekeeping
 
 - `pyproject.toml` extras `[belief]`, `[belief-mujoco]`, `[belief-mjlab]`.

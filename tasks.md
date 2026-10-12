@@ -127,6 +127,23 @@
   with hidden velocities (`examples/privileged_curriculum/isaaclab/cartpole_privileged_smoke.py` via `zzbw_smoke.sh`),
   sysid + transformer estimator from the registry YAML, mask p 0 -> 1, checkpoint + 2 clips, frames checked (2026-10-11).
 
+## 7h. Belief-method survey + encoders for Dict observations (2026-10-12)
+
+- [x] Deck comparing the belief of RSS20, WAFR08 (Hsiao et al.), Audit Before You Commit, GenAIF, quasi-static
+  belief dynamics (Jankowski) and skrl PrivilegedPPO/BeliefPPO, with equations:
+  `docs/belief_methods/build_belief_methods_slides.py` →
+  [Google Slides](https://docs.google.com/presentation/d/1Wz_vzRW_W-nKEJHs8J6sakNd3D9xXgZwO-0cHdmWYxU/edit).
+- [x] `skrl/models/torch/encoders.py`: per-key encoders for Dict observations (`mlp`, `cnn`, `pointnet`,
+  `dinov2` via torch.hub, `clip_image` / `clip_text` via open_clip, `identity`, `register_encoder` or
+  `"module:Class"` for any other), `DictEncoder` with `concat` or FiLM fusion, models `EncoderGaussianPolicy`,
+  `EncoderCategoricalPolicy`, `EncoderDeterministic` (Runner YAML names). Pretrained backbones frozen by default.
+- [x] `DictStandardScaler`: per-key observation preprocessor (standardizes low-dimensional float keys, passes
+  images / points / tokens through), YAML `observation_preprocessor: DictStandardScaler`.
+- [x] Tests: `tests/models/torch/test_encoders.py` (fake DINO/CLIP backbones, Runner PPO end-to-end, checkpoint).
+- [ ] Real DINOv2 / CLIP run: install `open_clip_torch`, torch.hub cache on the server; Isaac Lab camera task.
+- [ ] PrivilegedPPO still refuses observation preprocessors and works on a flat Box (no Dict encoders yet).
+- [ ] Belief methods in a MuJoCo cube-push env in skrl (deck slide 12): waiting for the user's choice of order.
+
 ## 8. CartPole physics extensions (answered below)
 
 CartPole friction and mass are configurable — see §8 answer in handoff.md.
