@@ -33,6 +33,7 @@ import torch
 import gymnasium
 
 from skrl.agents.torch.privileged_ppo import (
+    ESTIMATORS,
     ObsLayout,
     PrivilegedGaussianPolicy,
     PrivilegedPPO,
@@ -177,6 +178,8 @@ def main() -> None:
     parser.add_argument("--history", type=int, default=None, help="history length H (default: per task)")
     parser.add_argument("--actions", action="store_true", help="observation-action history (a_{t-1} appended to o_t)")
     parser.add_argument("--encoder-loss-scale", type=float, default=0.1, help="λ of ||z - sg(ẑ)||² (0: z free)")
+    parser.add_argument("--estimator", choices=list(ESTIMATORS), default="mlp", help="history estimator architecture")
+    parser.add_argument("--sysid-loss-scale", type=float, default=0.0, help="supervised system-ID loss (0: off)")
     args = parser.parse_args()
     set_seed(args.seed)
     task = TASKS[args.task]
@@ -203,7 +206,10 @@ def main() -> None:
     obs_dim = vec_env.single_observation_space.shape[0] - n_vel - len(task.dynamics) - 1
     layout = ObsLayout(obs_dim=obs_dim // (1 + task.history), history_length=task.history, privileged_dim=n_vel + len(task.dynamics))
     models = {
-        "policy": PrivilegedGaussianPolicy(env.observation_space, env.action_space, device, layout=layout, hidden=128),
+        "policy": PrivilegedGaussianPolicy(
+            env.observation_space, env.action_space, device, layout=layout, hidden=128,
+            estimator=args.estimator, sysid_head=args.sysid_loss_scale > 0,
+        ),
         "value": PrivilegedValue(env.observation_space, env.action_space, device, layout=layout, hidden=128),
     }
     groups = {"velocities": list(range(n_vel))}
@@ -225,9 +231,12 @@ def main() -> None:
         value_preprocessor=RunningStandardScaler,
         value_preprocessor_kwargs={"size": 1, "device": device},
         encoder_loss_scale=args.encoder_loss_scale,
+        sysid_loss_scale=args.sysid_loss_scale,
     )
     variant = (f"_H{task.history}" if args.history is not None else "") + ("_act" if args.actions else "")
     variant += f"_lam{args.encoder_loss_scale:g}" if args.encoder_loss_scale != 0.1 else ""
+    variant += f"_{args.estimator}" if args.estimator != "mlp" else ""
+    variant += f"_sysid{args.sysid_loss_scale:g}" if args.sysid_loss_scale > 0 else ""
     run_name = f"{args.task}_{args.mode}{variant}_seed{args.seed}"
     cfg.experiment.directory = args.log_dir
     cfg.experiment.experiment_name = run_name
@@ -259,6 +268,8 @@ def main() -> None:
         "history": task.history,
         "history_actions": args.actions,
         "encoder_loss_scale": args.encoder_loss_scale,
+        "estimator": args.estimator,
+        "sysid_loss_scale": args.sysid_loss_scale,
         "return_masked": masked,
         "return_visible": visible,
         "final_mask_probability": final_p,

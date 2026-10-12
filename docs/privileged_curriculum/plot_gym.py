@@ -172,3 +172,47 @@ if lam0:
                 m, v = [r["return_masked"] for r in rs], [r["return_visible"] for r in rs]
                 print(f"| {task} | {mode} | {lam} | {len(rs)} | {np.mean(m):.1f} ± {np.std(m):.1f} | "
                       f"{np.mean(v):.1f} ± {np.std(v):.1f} | {r2('ẑ')} | {r2('z')} |")
+
+# supervised system-ID head (λ = 0, observation-action history): estimator architecture × history length.
+# <root>/sysid: sysid_loss_scale 1; <root>/sysid_off: same at H = 32 without the system-ID loss
+sysid = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(root, "sysid*", "*.json")))]
+if sysid:
+    archs = ["mlp", "conv1d", "lstm", "transformer"]
+    configs = [(a, h, 1.0) for a in archs for h in (8, 32, 64)] + [(a, 32, 0.0) for a in archs]
+    sid_tasks = sorted({r["task"] for r in sysid})
+    print("\n| Task | Estimator | H | SysID loss | n | Eval masked | Eval visible | ẑ probe R² | ψ(ẑ) R² |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    fig, axes = plt.subplots(2, len(sid_tasks), figsize=(6.5 * len(sid_tasks), 8), dpi=130, squeeze=False)
+    for col, task in enumerate(sid_tasks):
+        rs_task = [r for r in sysid if r["task"] == task]
+        groups = [k.split(" R2 ")[1] for k in rs_task[0]["probe_r2"] if k.startswith("ẑ")]
+        dyn = groups[1:]
+        labels, r2_dyn, ret = [], [], []
+        for arch, h, sl in configs:
+            rs = [r for r in rs_task if r["estimator"] == arch and r["history"] == h and r["sysid_loss_scale"] == sl]
+            if not rs:
+                continue
+            mean_of = lambda key, g: np.mean([r["probe_r2"].get(f"{key} R2 {g}", np.nan) for r in rs])  # noqa: E731
+            probe = ", ".join(f"{g} {mean_of('ẑ', g):.2f}" for g in groups)
+            head = ", ".join(f"{g} {mean_of('ψ(ẑ)', g):.2f}" for g in groups) if sl > 0 else "–"
+            m, v = [r["return_masked"] for r in rs], [r["return_visible"] for r in rs]
+            print(f"| {task} | {arch} | {h} | {sl:g} | {len(rs)} | {np.mean(m):.1f} ± {np.std(m):.1f} | "
+                  f"{np.mean(v):.1f} ± {np.std(v):.1f} | {probe} | {head} |")
+            labels.append(f"{arch}\nH{h}" + ("" if sl > 0 else "\nno sysid"))
+            r2_dyn.append([np.mean([r["probe_r2"][f"ẑ R2 {g}"] for r in rs]) for g in dyn])
+            ret.append((np.mean(m), np.std(m)))
+        x = np.arange(len(labels))
+        for g, group in enumerate(dyn):
+            axes[0][col].bar(x + (g - 0.5) * 0.38, [v[g] for v in r2_dyn], 0.36, label=group)
+        axes[0][col].set_ylabel("held-out probe R² from ẑ (dynamics)")
+        axes[0][col].set_ylim(-0.1, 1.0)
+        axes[0][col].legend(fontsize=8)
+        axes[1][col].bar(x, [m for m, _ in ret], yerr=[s for _, s in ret], color="#2ca02c", capsize=2)
+        axes[1][col].set_ylabel("eval return, privileged masked")
+        for row in range(2):
+            axes[row][col].set_xticks(x, labels, fontsize=6)
+            axes[row][col].grid(axis="y", alpha=0.3)
+        axes[0][col].set_title(task)
+    fig.suptitle("Supervised system-ID head (λ = 0, (o, a) history): estimator architecture and history length")
+    fig.tight_layout()
+    fig.savefig(os.path.join(out, "09_sysid_estimators.png"))

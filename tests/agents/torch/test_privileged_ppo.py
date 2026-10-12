@@ -7,6 +7,8 @@ import torch
 import gymnasium
 
 from skrl.agents.torch.privileged_ppo import (
+    ESTIMATORS,
+    PrivilegedActorTrunk,
     ObsLayout,
     PrivilegedCategoricalPolicy,
     PrivilegedPPO,
@@ -233,3 +235,82 @@ def test_probes_report_r2_per_group() -> None:
         agent.post_interaction(timestep=t, timesteps=timesteps)
     assert set(agent.probe_metrics) == {"z R2 a", "z R2 b", "ẑ R2 a", "ẑ R2 b"}
     assert c.smoothed is not None
+
+
+def test_layout_sequence_is_oldest_first() -> None:
+    env = _wrapped_cartpole()
+    obs0, _ = env.reset(seed=0)
+    obs1, *_ = env.step(0)
+    seq = LAYOUT.sequence(torch.tensor(obs1)[None])
+    assert seq.shape == (1, 1 + H, D)
+    assert torch.allclose(seq[0, -1], torch.tensor(obs1[:D]))  # newest: o_t
+    assert torch.allclose(seq[0, -2], torch.tensor(obs0[:D]))  # then o_{t-1}
+    assert torch.all(seq[0, :-2] == 0)  # zero padding from the reset
+
+
+@pytest.mark.parametrize("arch", ESTIMATORS)
+def test_estimator_architectures(arch) -> None:
+    torch.manual_seed(0)
+    trunk = PrivilegedActorTrunk(LAYOUT, latent_dim=5, hidden=16, estimator=arch, sysid_head=True)
+    x = torch.randn(7, LAYOUT.size)
+    z, z_hat = trunk.latents(x)
+    assert z.shape == z_hat.shape == (7, 5)
+    assert trunk.sysid(z_hat).shape == (7, P)
+    y = x.clone()
+    y[:, -P - 1 :] += 10.0  # privileged values and mask: the estimator must ignore them
+    assert torch.allclose(trunk.latents(y)[1], z_hat, atol=1e-6)
+    if arch == "transformer":  # causal over time; the newest token sees everything, so check the oldest frame matters
+        y = x.clone()
+        y[:, D : 2 * D] += 1.0
+        assert not torch.allclose(trunk.latents(y)[1], z_hat)
+
+
+def test_sysid_head_regresses_privileged_values() -> None:
+    torch.manual_seed(0)
+    obs_space, act_space = _space(LAYOUT.size), gymnasium.spaces.Discrete(NA)
+    policy = PrivilegedCategoricalPolicy(obs_space, act_space, "cpu", layout=LAYOUT, estimator="lstm", sysid_head=True)
+    agent = PrivilegedPPO(
+        models={"policy": policy, "value": PrivilegedValue(obs_space, act_space, "cpu", layout=LAYOUT)},
+        memory=RandomMemory(memory_size=ROLLOUTS, num_envs=2, device="cpu"),
+        observation_space=obs_space,
+        action_space=act_space,
+        device="cpu",
+        cfg=PrivilegedPPO_CFG(
+            rollouts=ROLLOUTS, learning_epochs=2, mini_batches=2, encoder_loss_scale=0.0, sysid_loss_scale=1.0,
+            privileged_groups={"a": [0], "b": [1]},
+        ),
+    )
+    agent.init()
+    agent.enable_training_mode(True, apply_to_models=False)
+
+    def obs_batch():  # privileged values are a function of the oldest history frame
+        x = torch.randn(2, LAYOUT.size)
+        x[:, -P - 1 : -1] = x[:, D : D + P]
+        x[:, -1] = 1.0
+        return x
+
+    timesteps = 60 * ROLLOUTS
+    for t in range(timesteps):
+        obs = obs_batch()
+        with torch.no_grad():
+            actions, _ = agent.act(obs, None, timestep=t, timesteps=timesteps)
+            agent.record_transition(
+                observations=obs, states=None, actions=actions, rewards=torch.ones(2, 1),
+                next_observations=obs_batch(), next_states=None,
+                terminated=torch.zeros(2, 1, dtype=torch.bool), truncated=torch.zeros(2, 1, dtype=torch.bool),
+                infos={}, timestep=t, timesteps=timesteps,
+            )
+        agent.post_interaction(timestep=t, timesteps=timesteps)
+    assert agent.probe_metrics["ψ(ẑ) R2 a"] > 0.5 and agent.probe_metrics["ψ(ẑ) R2 b"] > 0.5
+
+
+def test_sysid_needs_head() -> None:
+    obs_space = _space(LAYOUT.size)
+    with pytest.raises(ValueError):
+        PrivilegedPPO(
+            models={"policy": _policy(), "value": PrivilegedValue(obs_space, None, "cpu", layout=LAYOUT)},
+            observation_space=obs_space,
+            action_space=gymnasium.spaces.Discrete(NA),
+            device="cpu",
+            cfg={"sysid_loss_scale": 1.0},
+        )

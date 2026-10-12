@@ -29,6 +29,13 @@ class PrivilegedPPO_CFG(PPO_CFG):
     encoder_loss_scale: float = 0.1
     """Weight of ``||z - sg(ẑ)||²``: keeps the encoder latent reachable by the estimator (ROA-style)."""
 
+    sysid_loss_scale: float = 0.0
+    """Weight of the supervised system-identification loss ``||ψ(ẑ) - ē_t||² + ||ψ(z) - ē_t||²``, where ``ē_t`` are
+    the privileged values standardized per dimension over the rollout and ψ is the trunk's ``sysid`` decoder
+    (``PrivilegedActorTrunk(sysid_head=True)``). The ẑ term makes the history estimator regress the privileged
+    values directly, with every dimension weighted equally; the z term makes (encoder, ψ) an autoencoder, so z and ẑ
+    are decoded by the same ψ. ``0``: off (the estimator only matches z)."""
+
     privileged_groups: dict[str, list[int]] | None = None
     """Named groups of privileged dimensions (e.g. ``{"velocities": [0, 1], "dynamics": [2, 3]}``). Two probes
     decode the (standardized) privileged values from the detached latents, one from the encoder latent z and one
@@ -81,6 +88,8 @@ class PrivilegedPPO(PPO):
             raise ValueError("The policy needs a `trunk` with a `latents()` method (see PrivilegedActorTrunk)")
         layout = self.policy.trunk.layout
         self.privileged_groups = self.cfg.privileged_groups or {f"dim{i}": [i] for i in range(layout.privileged_dim)}
+        if self.cfg.sysid_loss_scale > 0 and getattr(self.policy.trunk, "sysid", None) is None:
+            raise ValueError("sysid_loss_scale > 0 needs a trunk with a `sysid` decoder (sysid_head=True)")
         self._probes: nn.ModuleDict | None = None
         self.probe_metrics: dict[str, float] = {}
         """Last probe R² per group and latent (``"ẑ R2 <group>"``, ``"z R2 <group>"``), measured on each new rollout
@@ -101,19 +110,30 @@ class PrivilegedPPO(PPO):
         super().update(timestep=timestep, timesteps=timesteps)
 
         trunk = self.policy.trunk
+        observations = self.memory.get_tensor_by_name("observations").reshape(-1, trunk.layout.size)
+        sysid = self.cfg.sysid_loss_scale > 0
+        if sysid:
+            privileged = trunk.layout.privileged(observations)
+            mean, std = privileged.mean(0), privileged.std(0) + 1e-6
+            self._track_sysid(observations, mean, std)
         cumulative_estimator_loss = 0.0
         cumulative_encoder_loss = 0.0
+        cumulative_sysid_loss = 0.0
         for (sampled_observations,) in self.memory.sample(
             names=["observations"], batch_size=len(self.memory), mini_batches=self.cfg.mini_batches
         ):
             z, z_hat = trunk.latents(sampled_observations)
             estimator_loss = F.mse_loss(z_hat, z.detach())
             encoder_loss = F.mse_loss(z, z_hat.detach())
+            loss = self.cfg.estimator_loss_scale * estimator_loss + self.cfg.encoder_loss_scale * encoder_loss
+            if sysid:
+                target = (trunk.layout.privileged(sampled_observations) - mean) / std
+                sysid_loss = F.mse_loss(trunk.sysid(z_hat), target) + F.mse_loss(trunk.sysid(z), target)
+                loss = loss + self.cfg.sysid_loss_scale * sysid_loss
+                cumulative_sysid_loss += sysid_loss.item()
 
             self.optimizer.zero_grad()
-            self.scaler.scale(
-                self.cfg.estimator_loss_scale * estimator_loss + self.cfg.encoder_loss_scale * encoder_loss
-            ).backward()
+            self.scaler.scale(loss).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
@@ -122,9 +142,22 @@ class PrivilegedPPO(PPO):
 
         self.track_data("Loss / Estimator loss", cumulative_estimator_loss / self.cfg.mini_batches)
         self.track_data("Loss / Encoder loss", cumulative_encoder_loss / self.cfg.mini_batches)
-        observations = self.memory.get_tensor_by_name("observations").reshape(-1, trunk.layout.size)
+        if sysid:
+            self.track_data("Loss / SysID loss", cumulative_sysid_loss / self.cfg.mini_batches)
         self.track_data("Curriculum / Masked fraction (rollout)", trunk.layout.mask(observations).mean().item())
         self._update_probes(observations)
+
+    @torch.no_grad()
+    def _track_sysid(self, observations: torch.Tensor, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """R² per group of the system-ID head ψ(ẑ) on the new rollout, before the head trains on it (held out)."""
+        trunk = self.policy.trunk
+        _, z_hat = trunk.latents(observations)
+        target = (trunk.layout.privileged(observations) - mean) / std
+        error = (trunk.sysid(z_hat) - target).pow(2).mean(0)
+        for group, dims in self.privileged_groups.items():
+            r2 = 1.0 - error[dims].mean().item()
+            self.probe_metrics[f"ψ(ẑ) R2 {group}"] = r2
+            self.track_data(f"SysID / ψ(ẑ) R2 {group}", r2)
 
     def _update_probes(self, observations: torch.Tensor) -> None:
         """Evaluate, then train, the z and ẑ probes on the rollout (privileged values standardized per rollout)."""
