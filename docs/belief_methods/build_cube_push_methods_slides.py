@@ -85,13 +85,14 @@ def table(s, x, y, w, rows, size=12, col_widths=None):
     return tbl
 
 
-def keyframes(method, seed):
-    video = os.path.join(RUNS, f"cube_push_{method}", "videos", f"{method}_seed{seed}.mp4")
+def keyframes(method, seed, video=None, prefix=None):
+    video = video or os.path.join(RUNS, f"cube_push_{method}", "videos", f"{method}_seed{seed}.mp4")
+    prefix = prefix or f"{method}_seed{seed}"
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     n = imageio_ffmpeg.count_frames_and_secs(video)[1]
     paths = []
     for k, f in enumerate(FRACTIONS):
-        path = os.path.join(IMG, f"{method}_seed{seed}_{k}.jpg")
+        path = os.path.join(IMG, f"{prefix}_{k}.jpg")
         subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-ss", f"{f * n:.2f}", "-i", video, "-frames:v", "1",
                         "-q:v", "3", path], check=True)
         paths.append(path)
@@ -102,6 +103,22 @@ def load(method):
     out = {}
     for seed in SEEDS:
         path = os.path.join(RUNS, f"cube_push_{method}", f"seed{seed}.json")
+        if os.path.exists(path):
+            out[seed] = json.load(open(path))
+    return out
+
+
+EMBS = {"gantry": "Gantry slides", "arm": "SCARA arm", "polar": "Cylindrical arm", "artic": "Articulated arm"}
+EMB_RUN = {"gantry": "cube_push_wafr08", "arm": "cube_push_arm_wafr08", "polar": "cube_push_polar_wafr08",
+           "artic": "cube_push_artic_wafr08"}
+EMB_JOINTS = {"gantry": "3 slides", "arm": "shoulder/elbow yaw + rod slide", "polar": "turret yaw + radial/rod slides",
+              "artic": "base yaw + shoulder/elbow/wrist pitch"}
+
+
+def load_emb(emb):
+    out = {}
+    for seed in SEEDS:
+        path = os.path.join(RUNS, EMB_RUN[emb], f"seed{seed}.json")
         if os.path.exists(path):
             out[seed] = json.load(open(path))
     return out
@@ -316,6 +333,44 @@ text(s, Inches(0.6), Inches(5.0), Inches(12.2), Inches(2.3), [
     "RSS20 particles start at ~4.6 (128-particle prior).",
     "Audit's entropy falls but the belief is overconfident (truth outside the retained set C on most commits).",
 ], size=15)
+
+# ---------------------------------------------------------------- embodiments: WAFR08 across low levels
+emb_results = {b: load_emb(b) for b in EMBS}
+if any(emb_results.values()):
+    s = title_only("End-effector hierarchy: WAFR08 on four low levels",
+                   "Same planner, same seed (cube pose, physics, goal), same WRT library — only the low level changes; "
+                   "all act through tip targets, joints stay below the EE interface")
+    rows = [["low level", "joints", "seed", "success", "final error", "WRTs", "H end", "P(goal) end"]]
+    for b, name in EMBS.items():
+        for seed, r in sorted(emb_results[b].items()):
+            rows.append([name, EMB_JOINTS[b], seed, "yes" if r["success"] else "no",
+                         f"{r['goal_dist_cm']:.1f} cm / {r['goal_dyaw_deg']:.0f}°", len(r["log"]),
+                         f"{r['log'][-1]['entropy']:.2f}", f"{r['log'][-1]['p_goal']:.2f}"])
+    table(s, Inches(0.5), Inches(1.5), Inches(12.3), rows, size=11,
+          col_widths=[1.7, 3.4, 0.7, 1.0, 1.9, 0.8, 0.9, 1.2])
+    for b, name in EMBS.items():
+        seeds = emb_results[b]
+        if 1 not in seeds:
+            continue
+        r = seeds[1]
+        video = os.path.join(RUNS, EMB_RUN[b], "videos", "wafr08_seed1.mp4")
+        if not os.path.exists(video):
+            continue
+        s = title_only(f"{name}: WAFR08 seed 1 keyframes",
+                       f"Same seed as the other low levels | final error {r['goal_dist_cm']:.1f} cm, "
+                       f"{r['goal_dyaw_deg']:.0f}° in {len(r['log'])} WRTs")
+        for k, path in enumerate(keyframes("wafr08", 1, video=video, prefix=f"emb_{b}_seed1")):
+            s.shapes.add_picture(path, Inches(0.35 + 6.35 * (k % 2)), Inches(1.35 + 3.05 * (k // 2)),
+                                 height=Inches(3.0))
+        text(s, Inches(4.15), Inches(1.35), Inches(2.4), Inches(5.9), [
+            "Orange tiles: belief cells (opacity ∝ mass)",
+            "Blue box: estimate w*",
+            "Green: goal pose, 2 cm disc",
+            "Yellow: current controller path",
+        ], size=11)
+    title_only("Low levels: full renders (seed 1)",
+               "Drive videos wafr08_seed1.mp4 from runs/cube_push_{arm,polar,artic}_wafr08/videos/ and "
+               "runs/cube_push_wafr08/videos/ (gantry)")
 
 # ---------------------------------------------------------------- limits
 s = title_only("What the test implementations show, and what they do not")

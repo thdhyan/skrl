@@ -185,35 +185,56 @@ planner subclass that changes the belief, the model or the decision rule. One ru
   success signal (privileged, as in the paper), which the other methods do not get.
 - [x] Evals run on zz-bw (Audit, GenAIF, quasi-static) and dl (RSS20) after parallel local runs crashed the laptop.
 - [x] Deck `docs/belief_methods/build_cube_push_methods_slides.py` → Google Slides "Cube push: belief methods"
-  (https://docs.google.com/presentation/d/16XQQpLzmtNFXuAkzWxDuDZx8S9-DxF-g_McJmiprX00/edit, 18 slides): summary table, env
+  (https://docs.google.com/presentation/d/1MCdsH45AFGnNYwQPaN0RBXsya2CMfSdV7DuaaECzJRw/edit, 24 slides): summary table, env
   definitions (obs Box(10), action Box(3), reward, termination, hidden state), controller-level definitions, per
   method rule + seed-1 keyframes + embedded seed 0/1/2 videos (Drive folder 1KVtaCvJHo__JFWIpUJOHmmy6efQpm_dB),
-  distance comparison, belief-entropy comparison (new: WAFR08 contracts to P(goal) > 0.8, GenAIF stuck ~7 nats),
-  limits incl. RSS20 0-touches caveat and yaw-only failures; 12 videos embedded.
+  distance comparison, belief-entropy comparison, embodiment section (table + seed-1 keyframes + 4 embedded
+  seed-1 videos), limits; 16 videos embedded.
 
-## 7j. Arm low level under IK: same tip, joints below the EE interface (2026-10-12)
+## 7j. Arm low levels under IK: same tip, joints below the EE interface (2026-10-12)
 
-Hierarchical split: planners output end-effector (tip) targets (WRTs); a 3-joint arm (shoulder/elbow yaw + vertical
-rod slide, `CubePushCfg(pusher="arm")`, analytic IK + joint servos) realizes them. Action Box(3) and observation
-Box(10) are unchanged, so no planner, belief or decision code changed — only `sim.py` (arm MJCF, `arm_fk`/`arm_ik`,
-`sense`, `expand_controls`), `env.py` (`step` maps EE → IK → joint servo), `render.py` follow camera, `--pusher`
-on the runner and RSS20 training. IK is a pure function of the EE waypoints (fixed elbow branch), so env and
+Hierarchical split: planners output end-effector (tip) targets (WRTs); the low level realizes them. Action Box(3)
+and observation Box(10) are unchanged, so no planner, belief or decision code changed — only `sim.py` (MJCF models,
+FK/IK, `sense`, `expand_controls`), `env.py` (`step` maps EE → IK → joint servo), `render.py` follow camera,
+`--pusher` on the runner and RSS20 training. IK is a pure function of the EE waypoints (fixed branches), so env and
 hypotheses expand identical joint controls. Fixes along the way: hinge `range` is in degrees (elbow was welded at
-±2.95°); rollout thread pool keyed by model (mixed gantry+arm models segfaulted); tip site sensor reads contact
-only, Fz gravity bias subtracted. Tests `tests/envs/test_cube_push.py` 8/8 (5 gantry + 3 arm); isolated touch
-parity gantry vs arm [1, 0.0412] vs [1, 0.0408]; tracking 0.33 mm.
+±2.95°); rollout thread pool keyed by model (mixed models segfaulted); tip site sensor reads contact only, Fz
+gravity bias subtracted; artic wrist is `j3 = -j1-j2` (rod along wrist −z needs identity, not −90°). Tests
+`tests/envs/test_cube_push.py` 14/14; isolated touch parity all embodiments [1, ~0.041]; tracking ≤ 1.4 mm.
+
+Low levels (`CubePushCfg(pusher=…)`): `gantry` (3 slides), `arm` (SCARA: shoulder/elbow yaw + rod slide),
+`polar` (cylindrical: turret yaw + radial/rod slides, no branch choice), `artic` (base yaw +
+shoulder/elbow/wrist pitch, rod kept vertical, elbow-up).
 
 - [x] WAFR08 seed 1 (same physics/goal as gantry): arm SUCCESS 0.5 cm / 4.3° in 40 WRTs (22 touch + 18 goal) vs
   gantry 27 WRTs (21 + 6), 0.4 cm / 4.8°. Within tolerance from WRT #18, but P(goal) only 0.28 → 0.64 at the end
   (gantry 0.83): the pushes work, the belief does not concentrate, the belief stop never fires. Video
   `runs/cube_push_arm_wafr08/videos/wafr08_seed1.mp4`, frame checked (arm + belief panels render).
-- [ ] Suspected cause: 3-step settle is too short for the heavier arm — env starts each WRT with servo transients
-  while hypotheses start at perfect rest (isolated touches from rest match to 0.4 mm). Next: longer settle /
-  stiffer yaw servos / wider likelihoods in arm mode, then re-run.
+- [x] Three low levels, WAFR08 × 3 seeds each, on dl + zz-bw (64 cores, ~1–4 min/run, video on): polar seeds 0/1/2
+  on dl, artic seeds 0/1/2 on zz-bw, arm seeds 0/2 on dl (arm seed 1 local). Result: 12/12 success; belief stop
+  fires on 11/12 (only arm seed 1 runs to budget):
+
+  | low level | s0 (WRTs) | s1 (WRTs) | s2 (WRTs) |
+  |---|---|---|---|
+  | gantry | 1.3 cm 1.9° (21) | 0.4 cm 4.8° (27) | 0.4 cm 5.5° (22) |
+  | SCARA arm | 0.3 cm 1.6° (23) | 0.5 cm 4.3° (40) | 0.8 cm 6.5° (17) |
+  | polar | 1.0 cm 1.9° (38) | 0.5 cm 1.2° (29) | 0.8 cm 0.9° (19) |
+  | artic | 0.8 cm 6.8° (17) | 0.6 cm 7.4° (29) | 0.8 cm 3.8° (18) |
+
+  Same planner, same seeds: the low level changes efficiency (17–40 WRTs) and belief concentration, not
+  feasibility. Polar/artic concentrate better than arm seed 1 (P(goal) end 0.82/0.86 via belief stop). Artic yaw
+  errors slightly larger (gravity-loaded wrist). Deck §"End-effector hierarchy" has the table + seed-1 keyframes
+  + 4 embedded seed-1 videos (distinct Drive names `wafr08_{gantry,arm,polar,artic}_seed1.mp4` — same-name
+  uploads overwrite each other).
+- [ ] Suspected cause of arm seed-1's diffuse belief: 3-step settle is too short for the heavier arm — env starts
+  each WRT with servo transients while hypotheses start at perfect rest (isolated touches from rest match to
+  0.4 mm). Next: longer settle / stiffer yaw servos / wider likelihoods in arm mode, then re-run.
 - [ ] Other methods: Audit/quasi-static reuse the same `predict`/`execute` (no code change); GenAIF's learned model
   was trained on gantry traces and must be retrained (`dataset()` already routes through `expand_controls`/`sense`);
-  RSS20 eval works via `execute`, training takes `--pusher arm` (not run yet). Full arm sweep (5 methods × 3 seeds)
-  not run — one seed demonstrates the pattern.
+  RSS20 eval works via `execute`, training takes `--pusher arm` (not run yet). Arm sweep of other methods not run.
+- [x] Infra notes: remotes (`dl`, `zz-bw`) hold non-git copies under `~/Projects/skrl` (rsync changed files, never
+  `runs/`); out-dir bug fixed (non-gantry runs used to land in `runs/cube_push_wafr08` and overwrite gantry outputs
+  — polar/artic outputs relocated, remote gantry dirs restorable from local).
 
 ## 8. CartPole physics extensions (answered below)
 
