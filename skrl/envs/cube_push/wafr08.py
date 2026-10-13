@@ -28,6 +28,7 @@ import dataclasses
 import math
 from typing import Callable
 
+import mujoco
 import numpy as np
 
 from skrl.belief.grid_belief import GridBelief, entropy, expected_information_gain
@@ -312,12 +313,14 @@ class WAFR08CubePlanner:
         """Rollouts of many WRTs from the single state w (padded to a common length, holding the last target)."""
         e = self.env_cfg
         length = max(len(x.targets) for x in wrts)
+        # Create model once for all WRTs (needed for mesh arm IK)
+        model = self.sim.variant(*w[3:6])
+        data = mujoco.MjData(model)
         controls = np.stack([
             expand_controls(e, x.start, np.concatenate([x.targets, np.repeat(x.targets[-1:], length - len(x.targets), 0)]),
-                            e.substeps)
+                            e.substeps, model, data)
             for x in wrts
         ])
-        model = self.sim.variant(*w[3:])
         init = np.concatenate([self.sim.initial_states(x.start, w[None, :3]) for x in wrts])
         sd = rollout([model] * len(wrts), init, controls)
         out = []

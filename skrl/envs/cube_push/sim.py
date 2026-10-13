@@ -86,6 +86,8 @@ class CubePushCfg:
 
 
 def mjcf(cfg: CubePushCfg) -> str:
+    if cfg.pusher in ("franka", "ur5e"):
+        return _mesh_mjcf(cfg, cfg.pusher)
     if cfg.pusher == "arm":
         return _arm_mjcf(cfg)
     if cfg.pusher == "polar":
@@ -93,7 +95,7 @@ def mjcf(cfg: CubePushCfg) -> str:
     if cfg.pusher == "artic":
         return _artic_mjcf(cfg)
     if cfg.pusher != "gantry":
-        raise ValueError(f"unknown pusher {cfg.pusher!r} (gantry, arm, polar, artic)")
+        raise ValueError(f"unknown pusher {cfg.pusher!r} (gantry, arm, polar, artic, franka, ur5e)")
     h, r, hh = cfg.cube_half, cfg.pusher_radius, cfg.pusher_half_height
     tx, ty = cfg.table_half
     ctrl = f'kp="{cfg.pusher_kp}" kv="{cfg.pusher_kv}"'
@@ -436,10 +438,77 @@ def artic_ik(cfg: CubePushCfg, ee: np.ndarray) -> np.ndarray:
 EE_OFF = 0.03
 
 #: arm joints per low level (gantry slides count as 3).
-N_JOINTS = {"gantry": 3, "arm": 3, "polar": 3, "artic": 4}
+N_JOINTS = {"gantry": 3, "arm": 3, "polar": 3, "artic": 4, "franka": 7, "ur5e": 6}
+
+#: extra tip-pose floats (framepos + framequat of the tip site) sensed by the mesh arms.
+N_TIP = {"franka": 7, "ur5e": 7}
 
 #: tip gravity bias (N) seen by the site force sensor, per low level (gantry reads actuator forces: no bias).
-TIP_BIAS = {"gantry": 0.0, "arm": 0.981, "polar": 0.981, "artic": 0.981}
+TIP_BIAS = {"gantry": 0.0, "arm": 0.981, "polar": 0.981, "artic": 0.981, "franka": 0.981, "ur5e": 0.981}
+
+#: mesh-arm embodiments (MuJoCo Menagerie assets).
+MESH_ARMS = ("franka", "ur5e")
+
+
+def _mesh_mjcf(cfg: CubePushCfg, name: str) -> str:
+    """Our table scene with a menagerie arm transplanted onto a base mount, carrying the pusher tool + wrist cam."""
+    import xml.etree.ElementTree as ET
+
+    from skrl.envs.cube_push.mesh_arms import ARMS, meshdir, tool_element, transplant
+
+    spec = ARMS[name]
+    default_xml, asset_xml, arm, joint_names = transplant(name)
+    flange = next(b for b in arm.iter("body") if b.get("name") == spec["flange"])
+    rod_len = spec.get("tool_rod_len", 0.31)
+    flange.append(tool_element(rod_len))
+    arm_body = ET.tostring(arm, encoding="unicode")
+    ours = {"grid", "table"}
+    theirs = {e.get("name") for e in ET.fromstring(f"<root>{asset_xml}</root>").iter()
+              if e.tag in ("material", "texture", "mesh") and e.get("name")}
+    assert not (ours & theirs), f"asset name clash: {ours & theirs}"
+    kp, kv = spec["kp"], spec["kv"]
+    actuators = "\n".join(f'    <position name="a{i}" joint="{j}" kp="{kp}" kv="{kv}" ctrllimited="false"/>'
+                          for i, j in enumerate(joint_names))
+    sensors = "\n".join([f'    <force name="tipf" site="tip"/>']
+                        + [f'    <jointpos joint="{j}"/>' for j in joint_names]
+                        + ['    <framepos name="tippos" objtype="site" objname="tip"/>',
+                           '    <framequat name="tipquat" objtype="site" objname="tip"/>',
+                           '    <framepos objtype="body" objname="cube"/>',
+                           '    <framequat objtype="body" objname="cube"/>'])
+    h = cfg.cube_half
+    tx, ty = cfg.table_half
+    mount = spec["mount"]
+    bx, by, bz = (mount[0], mount[1], mount[2]) if len(mount) == 3 else (mount[0], mount[1], 0.0)
+    return f"""
+<mujoco model="cube_push_{name}">
+  <compiler angle="radian" meshdir="{meshdir(name)}" autolimits="true"/>
+  {default_xml}
+  <asset>
+    {asset_xml.lstrip()}
+    <texture name="grid" type="2d" builtin="checker" rgb1=".72 .7 .66" rgb2=".64 .62 .58" width="300" height="300"/>
+    <material name="table" texture="grid" texrepeat="9 7"/>
+  </asset>
+  <worldbody>
+    <light pos="0 -0.4 1.5" dir="0 0.25 -1" diffuse=".45 .45 .45"/>
+    <geom name="table" type="plane" size="{tx} {ty} 0.01" material="table" friction="0.01 0.005 0.0001"/>
+    <camera name="overview" pos="-0.55 -0.75 0.65" xyaxes="0.81 -0.59 0 0.33 0.46 0.82"/>
+    <camera name="top" pos="0.1 0 1.05" xyaxes="1 0 0 0 1 0"/>
+    <body name="robot_base" pos="{bx} {by} {bz}">
+      {arm_body}
+    </body>
+    <body name="cube" pos="0.06 0 {h}">
+      <freejoint name="cube"/>
+      <geom name="cube" type="box" size="{h} {h} {h}" mass="0.4" friction="0.5 0.005 0.0001" rgba=".9 .45 .1 1"/>
+    </body>
+  </worldbody>
+  <actuator>
+{actuators}
+  </actuator>
+  <sensor>
+{sensors}
+  </sensor>
+</mujoco>
+"""
 
 
 def sense(cfg: CubePushCfg, sensordata: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -454,7 +523,18 @@ def sense(cfg: CubePushCfg, sensordata: np.ndarray) -> tuple[np.ndarray, np.ndar
     n = N_JOINTS[cfg.pusher]
     force = sd[..., 0:3].copy()
     force[..., 2] -= TIP_BIAS[cfg.pusher]
+    if cfg.pusher in MESH_ARMS:
+        base = 3 + n
+        return tip_ee(sd[..., base : base + 3], sd[..., base + 3 : base + 7]), force
     return fk(cfg, sd[..., 3 : 3 + n]), force
+
+
+def tip_ee(pos: np.ndarray, quat: np.ndarray) -> np.ndarray:
+    """End-effector from the tip site framepos + framequat ``(w, x, y, z)``: site + 3 cm along its z-axis."""
+    pos = np.asarray(pos, dtype=np.float64)
+    w, x, y, z = (np.asarray(quat, dtype=np.float64)[..., i] for i in range(4))
+    r31, r32, r33 = 2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)
+    return np.stack([pos[..., 0] + EE_OFF * r31, pos[..., 1] + EE_OFF * r32, pos[..., 2] + EE_OFF * r33], -1)
 
 
 def fk(cfg: CubePushCfg, q: np.ndarray) -> np.ndarray:
@@ -470,6 +550,14 @@ def fk(cfg: CubePushCfg, q: np.ndarray) -> np.ndarray:
 
 def ik(cfg: CubePushCfg, ee: np.ndarray) -> np.ndarray:
     """Low-level joints for the end-effector target. Pure in the target for every embodiment."""
+    if cfg.pusher in MESH_ARMS:
+        # lazy import to avoid circular
+        from skrl.envs.cube_push.mesh_arms import ARMS, NumericIK
+        spec = ARMS[cfg.pusher]
+        ee = np.asarray(ee, dtype=np.float64)
+        # DLS IK - we'll call this with a model/data later; for now return the seed
+        # The actual solve happens in expand_controls / env.step where we have the model
+        return np.asarray(spec["seed"], dtype=np.float64)
     if cfg.pusher == "artic":
         return artic_ik(cfg, ee)
     if cfg.pusher == "polar":
@@ -480,9 +568,9 @@ def ik(cfg: CubePushCfg, ee: np.ndarray) -> np.ndarray:
 
 
 def cube_offsets(cfg: CubePushCfg) -> tuple[slice, slice]:
-    """Sensordata slices of the cube position/quaternion (arms carry extra joint sensors before them)."""
-    n = 3 if cfg.pusher == "gantry" else N_JOINTS[cfg.pusher]
-    return slice(3 + n, 6 + n), slice(6 + n, 10 + n)
+    """Sensordata slices of the cube position/quaternion (arms carry joint + tip-pose sensors before them)."""
+    base = 3 + N_JOINTS[cfg.pusher] + N_TIP.get(cfg.pusher, 0)
+    return slice(base, base + 3), slice(base + 3, base + 7)
 
 
 def wrap_yaw(yaw):
@@ -507,7 +595,8 @@ class CubePushModel:
 
     def __init__(self, cfg: CubePushCfg | None = None) -> None:
         self.cfg = cfg or CubePushCfg()
-        self.model = mujoco.MjModel.from_xml_string(mjcf(self.cfg))
+        self._xml = mjcf(self.cfg)
+        self.model = mujoco.MjModel.from_xml_string(self._xml)
         self.cube_body = self.model.body("cube").id
         self.cube_geom = self.model.geom("cube").id
         self.cube_dof = self.model.jnt_dofadr[self.model.joint("cube").id]
@@ -528,7 +617,7 @@ class CubePushModel:
         """A copy of the model with the given cube physics (cached per value)."""
         key = (round(mu, 6), round(mass, 6), round(damping, 6))
         if key not in self._variants:
-            model = mujoco.MjModel.from_xml_string(mjcf(self.cfg))
+            model = mujoco.MjModel.from_xml_string(self._xml)
             self.set_physics(model, *key)
             self._variants[key] = model
         return self._variants[key]
@@ -536,8 +625,24 @@ class CubePushModel:
     def set_state(self, data: mujoco.MjData, pusher_xyz, cube_xyyaw) -> None:
         """Tip at ``pusher_xyz`` (control too), cube resting at ``(x, y, yaw)``, everything at rest."""
         mujoco.mj_resetData(self.model, data)
-        n = N_JOINTS[self.cfg.pusher]
-        q = np.asarray(ik(self.cfg, np.asarray(pusher_xyz, float)), dtype=np.float64).ravel()[:n]
+        if self.cfg.pusher in MESH_ARMS:
+            from skrl.envs.cube_push.mesh_arms import ARMS, NumericIK
+            spec = ARMS[self.cfg.pusher]
+            n = N_JOINTS[self.cfg.pusher]
+            dofs = np.arange(n)
+            q_min = np.array([-np.inf] * n)
+            q_max = np.array([np.inf] * n)
+            # Get actual joint limits from model
+            for i, jn in enumerate(spec.get("joint_names", [])):
+                jid = self.model.joint(jn).id
+                if self.model.jnt_limited[jid]:
+                    q_min[i], q_max[i] = self.model.jnt_range[jid]
+            ik_solver = NumericIK(spec["seed"], null=spec.get("ik_null", 0.02))
+            site_id = self.model.site("tip").id
+            q = ik_solver.solve(self.model, data, site_id, dofs, q_min, q_max, np.asarray(pusher_xyz, float))
+        else:
+            n = N_JOINTS[self.cfg.pusher]
+            q = np.asarray(ik(self.cfg, np.asarray(pusher_xyz, float)), dtype=np.float64).ravel()[:n]
         data.qpos[:n] = q
         data.ctrl[:n] = q
         x, y, yaw = cube_xyyaw
@@ -547,9 +652,35 @@ class CubePushModel:
     def initial_states(self, pusher_xyz, poses: np.ndarray) -> np.ndarray:
         """Rollout initial states ``[K, nstate]`` for cube poses ``[K, 3]`` and a common pusher position."""
         data = mujoco.MjData(self.model)
+        n = N_JOINTS[self.cfg.pusher]
+        # Compute pusher joint positions once (same for all hypotheses)
+        if self.cfg.pusher in MESH_ARMS:
+            from skrl.envs.cube_push.mesh_arms import ARMS, NumericIK
+            spec = ARMS[self.cfg.pusher]
+            dofs = np.arange(n)
+            q_min = np.array([-np.inf] * n)
+            q_max = np.array([np.inf] * n)
+            joint_names = spec.get("joint_names", [])
+            if not joint_names:
+                joint_names = [self.model.joint(i).name for i in range(self.model.nu)]
+            for i, jn in enumerate(joint_names):
+                jid = self.model.joint(jn).id
+                if self.model.jnt_limited[jid]:
+                    q_min[i], q_max[i] = self.model.jnt_range[jid]
+            ik_solver = NumericIK(spec["seed"], null=spec.get("ik_null", 0.02))
+            site_id = self.model.site("tip").id
+            pusher_q = ik_solver.solve(self.model, data, site_id, dofs, q_min, q_max, np.asarray(pusher_xyz, float))
+        else:
+            pusher_q = np.asarray(ik(self.cfg, np.asarray(pusher_xyz, float)), dtype=np.float64).ravel()[:n]
+        
         states = np.empty((len(poses), mujoco.mj_stateSize(self.model, self._spec)))
         for i, pose in enumerate(poses):
-            self.set_state(data, pusher_xyz, pose)
+            mujoco.mj_resetData(self.model, data)
+            data.qpos[:n] = pusher_q
+            data.ctrl[:n] = pusher_q
+            x, y, yaw = pose
+            a = self.cube_qpos
+            data.qpos[a : a + 7] = [x, y, self.cfg.cube_half, math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]
             mujoco.mj_forward(self.model, data)
             mujoco.mj_getState(self.model, data, states[i], self._spec)
         return states
@@ -565,15 +696,49 @@ def substep_controls(previous: np.ndarray, targets: np.ndarray, substeps: int) -
     return (starts[:, None] + alpha * (targets - starts)[:, None]).reshape(-1, targets.shape[-1])
 
 
-def expand_controls(cfg: CubePushCfg, start_ee: np.ndarray, ee_targets: np.ndarray, substeps: int) -> np.ndarray:
+def expand_controls(cfg: CubePushCfg, start_ee: np.ndarray, ee_targets: np.ndarray, substeps: int,
+                    model=None, data=None) -> np.ndarray:
     """Per-physics-step actuator controls for end-effector targets ``[T, 3]`` from the tip start ``[3]``.
 
-    Gantry: interpolate in task space (actuators are slides). Arms: analytic IK per target (a pure function of the
-    end-effector waypoints), then interpolate in joint space. Both are deterministic in the waypoints, so the
+    Gantry: interpolate in task space (actuators are slides). Analytic arms: analytic IK per target (a pure function of the
+    end-effector waypoints), then interpolate in joint space. Mesh arms: numeric DLS IK with fixed seed/iters,
+    then interpolate in joint space. All are deterministic in the waypoints, so the
     environment and every hypothesis execute identical actuator trajectories.
     """
     if cfg.pusher == "gantry":
         return substep_controls(start_ee, ee_targets, substeps)
+    if cfg.pusher in MESH_ARMS:
+        # Create temporary model/data for IK if not provided
+        own_model, own_data = False, False
+        if model is None:
+            import mujoco
+            model = mujoco.MjModel.from_xml_string(mjcf(cfg))
+            own_model = True
+        if data is None:
+            import mujoco
+            data = mujoco.MjData(model)
+            own_data = True
+        from skrl.envs.cube_push.mesh_arms import ARMS, NumericIK
+        spec = ARMS[cfg.pusher]
+        n = N_JOINTS[cfg.pusher]
+        dofs = np.arange(n)
+        q_min = np.array([-np.inf] * n)
+        q_max = np.array([np.inf] * n)
+        joint_names = spec.get("joint_names", [])
+        if not joint_names:
+            joint_names = [model.joint(i).name for i in range(model.nu)]
+        for i, jn in enumerate(joint_names):
+            jid = model.joint(jn).id
+            if model.jnt_limited[jid]:
+                q_min[i], q_max[i] = model.jnt_range[jid]
+        ik_solver = NumericIK(spec["seed"], null=spec.get("ik_null", 0.02))
+        site_id = model.site("tip").id
+        qs = [ik_solver.solve(model, data, site_id, dofs, q_min, q_max, start_ee)]
+        for t in np.reshape(ee_targets, (-1, 3)):
+            qs.append(ik_solver.solve(model, data, site_id, dofs, q_min, q_max, t))
+        qs = np.stack(qs)
+        return substep_controls(qs[0], qs[1:], substeps)
+    # analytic arms (arm, polar, artic)
     qs = [np.asarray(ik(cfg, start_ee), dtype=np.float64).ravel()]
     qs += [np.asarray(ik(cfg, t), dtype=np.float64).ravel() for t in np.reshape(ee_targets, (-1, 3))]
     qs = np.stack(qs)

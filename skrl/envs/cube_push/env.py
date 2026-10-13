@@ -24,8 +24,12 @@ import numpy as np
 from skrl.envs.cube_push.sim import (
     CubePushCfg,
     CubePushModel,
+    MESH_ARMS,
     N_JOINTS,
+    N_TIP,
     cube_pose,
+    expand_controls,
+    fk,
     ik,
     mjcf,
     sense,
@@ -80,7 +84,12 @@ class CubePushEnv(gymnasium.Env):
         self.sim.set_physics(self.model, *self.physics)
         self.target = np.array([*cfg.pusher_start, cfg.z_high])
         self.sim.set_state(self.data, self.target, pose)
-        self.joint_target = np.asarray(ik(cfg, self.target), dtype=np.float64).ravel()
+        if cfg.pusher in MESH_ARMS:
+            # Numeric IK will be solved in step; init joint_target from current qpos
+            n = N_JOINTS[cfg.pusher]
+            self.joint_target = self.data.qpos[:n].copy()
+        else:
+            self.joint_target = np.asarray(ik(cfg, self.target), dtype=np.float64).ravel()
         mujoco.mj_forward(self.model, self.data)
         self.steps = 0
         return self._observation(), self._info()
@@ -95,6 +104,13 @@ class CubePushEnv(gymnasium.Env):
             for ctrl in substep_controls(self.target, target[None], cfg.substeps):
                 self.data.ctrl[:n] = ctrl
                 mujoco.mj_step(self.model, self.data)
+        elif cfg.pusher in MESH_ARMS:
+            # Numeric IK via expand_controls with model/data
+            controls = expand_controls(cfg, self.target, target[None], cfg.substeps, self.model, self.data)
+            for ctrl in controls:
+                self.data.ctrl[:n] = ctrl
+                mujoco.mj_step(self.model, self.data)
+            self.joint_target = self.data.qpos[:n].copy()
         else:
             joint = np.asarray(ik(cfg, target), dtype=np.float64).ravel()
             for ctrl in substep_controls(self.joint_target, joint[None], cfg.substeps):

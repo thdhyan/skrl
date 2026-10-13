@@ -264,3 +264,6 @@ cython_debug/
 
 # End of https://www.toptal.com/developers/gitignore/api/python,c,c++,visualstudiocode,cmake
 experiments/pomdp_and_obs_groups/wandb_offline/
+
+# fetched robot assets (menagerie, Apache-2.0; see robots/fetch_menagerie.sh)
+skrl/envs/cube_push/assets/
