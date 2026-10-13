@@ -30,8 +30,8 @@ METHODS = {"wafr08": "WAFR08", "audit": "Audit", "genaif": "GenAIF", "quasistati
 parser = argparse.ArgumentParser()
 parser.add_argument("--method", choices=list(METHODS), default="wafr08")
 parser.add_argument("--seed", type=int, default=1)
-parser.add_argument("--pusher", choices=["gantry", "arm", "polar", "artic"], default="gantry",
-                    help="low level: gantry slides, SCARA arm, cylindrical arm or articulated arm under IK "
+parser.add_argument("--pusher", choices=["gantry", "arm", "polar", "artic", "franka", "ur5e"], default="gantry",
+                    help="low level: gantry slides, SCARA arm, cylindrical arm, articulated arm, Franka, or UR5e under IK "
                     "(same EE interface)")
 parser.add_argument("--out", default=None, help="default runs/cube_push[_arm]_<method>")
 parser.add_argument("--policy", default="runs/cube_push_rss20/ddqn/checkpoints/best_agent.pt", help="rss20 only")
