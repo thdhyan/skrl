@@ -31,7 +31,7 @@ from typing import Callable
 import numpy as np
 
 from skrl.belief.grid_belief import GridBelief, entropy, expected_information_gain
-from skrl.envs.cube_push.sim import FORCE, PUSHER, CubePushCfg, CubePushModel, cube_pose, rollout, substep_controls
+from skrl.envs.cube_push.sim import CubePushCfg, CubePushModel, cube_pose, expand_controls, rollout, sense
 
 FACES = np.array([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]])  # outward face normals in the cube frame
 
@@ -267,15 +267,16 @@ class WAFR08CubePlanner:
             else:
                 models = [self.sim.variant(*p) for p in states[free, 3:]]
             init = self.sim.initial_states(wrt.start, states[free, :3])
-            sd = rollout(models, init, substep_controls(wrt.start, wrt.targets, e.substeps))
+            sd = rollout(models, init, expand_controls(e, wrt.start, wrt.targets, e.substeps))
             steps = sd[:, e.substeps - 1 :: e.substeps]  # end of every control step
             for j, i in enumerate(free):
-                obs[i] = self.features(wrt, steps[j, :, FORCE], steps[j, :, PUSHER])
+                tip, force = sense(e, steps[j])
+                obs[i] = self.features(wrt, force, tip)
                 if wrt.guarded and obs[i, 0] == 1.0:
-                    hit = self._contact_step(wrt, steps[j, :, FORCE])
-                    next_pose[i] = cube_pose(steps[j, hit])
+                    hit = self._contact_step(wrt, force)
+                    next_pose[i] = cube_pose(steps[j, hit], e)
                 else:
-                    next_pose[i] = cube_pose(steps[j, -1])
+                    next_pose[i] = cube_pose(steps[j, -1], e)
         fail = np.any(np.abs(next_pose[:, :2]) > np.asarray(e.table_half) - e.cube_half, axis=1)
         return Prediction(obs, next_pose, fail, blocked)
 
@@ -312,8 +313,8 @@ class WAFR08CubePlanner:
         e = self.env_cfg
         length = max(len(x.targets) for x in wrts)
         controls = np.stack([
-            substep_controls(x.start, np.concatenate([x.targets, np.repeat(x.targets[-1:], length - len(x.targets), 0)]),
-                             e.substeps)
+            expand_controls(e, x.start, np.concatenate([x.targets, np.repeat(x.targets[-1:], length - len(x.targets), 0)]),
+                            e.substeps)
             for x in wrts
         ])
         model = self.sim.variant(*w[3:])
@@ -322,9 +323,10 @@ class WAFR08CubePlanner:
         out = []
         for x, s in zip(wrts, sd):
             steps = s[e.substeps - 1 :: e.substeps][: len(x.targets)]
-            pose = cube_pose(steps[-1])
+            pose = cube_pose(steps[-1], e)
             fail = bool(np.any(np.abs(pose[:2]) > np.asarray(e.table_half) - e.cube_half))
-            obs = self.features(x, steps[:, FORCE], steps[:, PUSHER])
+            tip, force = sense(e, steps)
+            obs = self.features(x, force, tip)
             out.append(Prediction(obs[None], pose[None], np.array([fail]), np.array([False])))
         return out
 

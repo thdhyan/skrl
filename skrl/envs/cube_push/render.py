@@ -180,7 +180,7 @@ class BeliefVideo:
         return np.asarray(im)
 
     def frame(self) -> np.ndarray:
-        self.follow.lookat[:] = self.env.data.qpos[:3] * [1, 1, 0]
+        self.follow.lookat[:] = np.asarray(self.env.target, float) * [1, 1, 0]
         overview = self._label(self._view("overview"), "overview")
         top = self._label(self._view("top"), "top-down")
         follow = self._label(self._view(self.follow), "follow: pusher")

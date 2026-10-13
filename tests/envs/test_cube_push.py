@@ -7,7 +7,8 @@ pytest.importorskip("mujoco")
 
 from skrl.belief.grid_belief import GridBelief, entropy, expected_information_gain
 from skrl.envs.cube_push import CubePushEnv, pose_error
-from skrl.envs.cube_push.sim import FORCE, cube_pose, rollout, substep_controls
+from skrl.envs.cube_push.sim import FORCE, CubePushCfg, arm_fk, arm_ik, cube_pose, fk, ik, mjcf, rollout, sense, \
+    substep_controls
 from skrl.envs.cube_push.wafr08 import WAFR08CubePlanner
 
 
@@ -99,3 +100,77 @@ def test_planner_predicts_execution_and_decides():
     b.set(p)
     wrt, report = planner.decide()
     assert wrt is not None and wrt.kind in ("goal", "probe") and report["p_goal"] == 0.0
+
+
+@pytest.mark.parametrize("pusher", ["polar", "artic"])
+def test_extra_embodiments_ik_fk_roundtrip(pusher):
+    cfg = CubePushCfg(pusher=pusher)
+    mujoco = pytest.importorskip("mujoco")
+    model = mujoco.MjModel.from_xml_string(mjcf(cfg))
+    assert model.nu == {"polar": 3, "artic": 4}[pusher]
+    rng = np.random.default_rng(0)
+    ee = np.stack([rng.uniform(-0.3, 0.4, 200), rng.uniform(-0.25, 0.25, 200),
+                   rng.uniform(cfg.z_low, 0.2, 200)], 1)
+    np.testing.assert_allclose(fk(cfg, ik(cfg, ee)), ee, atol=1e-9)
+
+
+@pytest.mark.parametrize("pusher", ["polar", "artic"])
+def test_extra_embodiments_env_reset_step(pusher):
+    env = CubePushEnv(CubePushCfg(pusher=pusher))
+    obs, info = env.reset(seed=0, options=ARM_OPTIONS)
+    assert obs.shape == (10,) and env.observation_space.contains(obs)
+    np.testing.assert_allclose(obs[6:], [0.25, 0.05, 1.0, 0.0], atol=1e-6)
+    for _ in range(120):
+        obs, *_ = env.step([0.1, 0.1, env.cfg.z_high])
+    assert np.abs(obs[:3] - env.target).max() < 0.005  # IK + joint servos track (+ encoder noise)
+
+
+@pytest.mark.parametrize("pusher", ["polar", "artic"])
+def test_extra_embodiments_touch_parity(pusher):
+    env = CubePushEnv(CubePushCfg(pusher=pusher))
+    env.reset(seed=0, options=ARM_OPTIONS)
+    planner = WAFR08CubePlanner(env.cfg)
+    planner.reset(np.array(ARM_OPTIONS["goal"]))
+    wrt = planner.touch(np.array([0.06, 0.0, 0.2, 0.5, 0.4, 1.0]), 2, 0.0)
+    observed = planner.execute(env, wrt)
+    assert observed[0] == 1.0
+    np.testing.assert_allclose(observed[1], 0.0412, atol=0.01)  # same travel as the gantry touch
+
+
+ARM_OPTIONS = {"cube_pose": [0.06, 0.0, 0.2], "physics": [0.5, 0.4, 1.0], "goal": [0.25, 0.05, 0.0]}
+
+
+def test_arm_ik_fk_roundtrip():
+    cfg = CubePushCfg(pusher="arm")
+    rng = np.random.default_rng(0)
+    ee = np.stack([rng.uniform(-0.3, 0.4, 200), rng.uniform(-0.25, 0.25, 200),
+                   rng.uniform(cfg.z_low, 0.2, 200)], 1)
+    back = arm_fk(cfg, arm_ik(cfg, ee))
+    np.testing.assert_allclose(back, ee, atol=1e-9)
+    assert np.abs(arm_ik(cfg, ee)[:, 1]).max() < math.radians(169)
+
+
+def test_arm_env_reset_step():
+    env = CubePushEnv(CubePushCfg(pusher="arm"))
+    obs, info = env.reset(seed=0, options=ARM_OPTIONS)
+    assert obs.shape == (10,) and env.observation_space.contains(obs)
+    tip, _ = sense(env.cfg, env.data.sensordata)
+    np.testing.assert_allclose(tip, arm_fk(env.cfg, env.data.qpos[:3]), atol=1e-9)
+    np.testing.assert_allclose(obs[:3], env.target, atol=0.005)  # tip tracks the target (+ encoder noise)
+    np.testing.assert_allclose(obs[6:], [0.25, 0.05, 1.0, 0.0], atol=1e-6)
+    for _ in range(60):
+        obs, *_ = env.step([0.1, 0.1, env.cfg.z_high])
+    assert np.abs(obs[:3] - env.target).max() < 0.005  # IK + joint servos track to ~mm (+ encoder noise)
+
+
+def test_arm_rollout_matches_env():
+    env = CubePushEnv(CubePushCfg(pusher="arm"))
+    env.reset(seed=0, options=ARM_OPTIONS)
+    planner = WAFR08CubePlanner(env.cfg)
+    planner.reset(np.array(ARM_OPTIONS["goal"]))
+    wrt = planner.touch(np.array([0.06, 0.0, 0.2, 0.5, 0.4, 1.0]), 2, 0.0)
+    observed = planner.execute(env, wrt)
+    assert observed[0] == 1.0  # the guarded touch finds the cube through the arm
+    predicted = planner.predict(wrt, np.array([[0.06, 0.0, 0.2, 0.5, 0.4, 1.0]]))
+    assert predicted.obs[0, 0] == 1.0
+    np.testing.assert_allclose(observed[1], predicted.obs[0, 1], atol=0.01)

@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 
 from skrl.belief.grid_belief import entropy, expected_information_gain
-from skrl.envs.cube_push.sim import FORCE, PUSHER, CubePushCfg, cube_pose, rollout, substep_controls
+from skrl.envs.cube_push.sim import CubePushCfg, cube_pose, expand_controls, rollout, sense
 from skrl.envs.cube_push.wafr08 import WAFR08Cfg, WAFR08CubePlanner, WRT, Prediction
 
 KINDS = ("touch", "probe", "goal")
@@ -126,7 +126,7 @@ class GenAIFCubePlanner(WAFR08CubePlanner):
             states = np.concatenate([true, phys], 1)
             keep = [i for i in range(n) if not self._blocked(wrts[i], states[i:i + 1])[0]]
             length = max(len(wrts[i].targets) for i in keep)
-            controls = np.stack([substep_controls(wrts[i].start, np.concatenate(
+            controls = np.stack([expand_controls(e, wrts[i].start, np.concatenate(
                 [wrts[i].targets, np.repeat(wrts[i].targets[-1:], length - len(wrts[i].targets), 0)]), e.substeps)
                 for i in keep])
             init = np.concatenate([self.sim.initial_states(wrts[i].start, states[i:i + 1, :3]) for i in keep])
@@ -134,11 +134,12 @@ class GenAIFCubePlanner(WAFR08CubePlanner):
             for j, i in enumerate(keep):
                 wrt = wrts[i]
                 steps = sd[j, e.substeps - 1 :: e.substeps][: len(wrt.targets)]
-                f = self.features(wrt, steps[:, FORCE], steps[:, PUSHER])
+                tip, force = sense(e, steps)
+                f = self.features(wrt, force, tip)
                 if wrt.guarded and f[0] == 1.0:
-                    nxt = cube_pose(steps[self._contact_step(wrt, steps[:, FORCE])])
+                    nxt = cube_pose(steps[self._contact_step(wrt, force)], e)
                 else:
-                    nxt = cube_pose(steps[-1])
+                    nxt = cube_pose(steps[-1], e)
                 a, l, _ = _frame(wrt)
                 dxy = nxt[:2] - states[i, :2]
                 dyaw = np.mod(nxt[2] - states[i, 2] + math.pi / 4, math.pi / 2) - math.pi / 4

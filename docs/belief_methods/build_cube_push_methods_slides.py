@@ -128,6 +128,28 @@ def distance_plot(results):
     return path
 
 
+def belief_plot(results):
+    path = os.path.join(IMG, "belief.png")
+    plt.rcParams["text.usetex"] = False
+    fig, axes = plt.subplots(1, len(METHODS), figsize=(13, 3.3), dpi=130, sharey=True)
+    for a, (m, name) in zip(axes, METHODS.items()):
+        for seed, r in results[m].items():
+            log = r["log"]
+            p_end = log[-1].get("p_goal", float("nan"))
+            a.plot(range(1, len(log) + 1), [l["entropy"] for l in log], ".-", ms=3,
+                   label=f"seed {seed} (Pgoal {p_end:.2f})")
+        a.set_title(name)
+        a.set_xlabel("controller #")
+        a.grid(alpha=0.3)
+        a.legend(fontsize=7)
+    axes[0].set_ylabel("belief entropy [nats]")
+    fig.tight_layout()
+    fig.savefig(path)
+    plt.close(fig)
+    plt.rcParams["text.usetex"] = True
+    return path
+
+
 def summary(r):
     kinds = [l["wrt"].split()[0] for l in r["log"]]
     pushes = sum(k in ("goal", "qs") for k in kinds)
@@ -233,7 +255,8 @@ RULES = {
         r"bank of 16 controllers around the 2 modes; policy $\arg\max_a Q_\theta(\tilde b, g, a)$",
         r"$Q_\theta$: dueling double DQN (ResNet 4 × 64), 48 parallel envs on dl, 72k transitions",
     ], ["Stops on the task-completion signal (true success), as in the paper; the other methods stop on belief.",
-        "Training reward is shaped by the true distance (privileged, training only)."]),
+        "Training reward is shaped by the true distance (privileged, training only).",
+        "0 touches in all 3 seeds: the policy pushes without localizing, so its belief use is unproven (see limits)."]),
 }
 for m in ("audit", "genaif", "quasistatic", "rss20"):
     name = METHODS[m]
@@ -283,6 +306,17 @@ text(s, Inches(0.6), Inches(5.0), Inches(12.2), Inches(2.3), [
     "Test implementations: hyper-parameters set by hand on seed 1, not tuned; 3 seeds do not support ranking claims.",
 ], size=15)
 
+# ---------------------------------------------------------------- belief contraction
+s = title_only("Comparison: belief entropy per controller (legend: end-of-run P(goal))",
+               "WAFR08 contracts the belief and commits (P(goal) > 0.8); GenAIF stays broad (~7 nats, P(goal) < 0.1) "
+               "so its stop never fires; RSS20 runs are short (6-7 controllers) on the privileged stop")
+s.shapes.add_picture(belief_plot(results), Inches(0.2), Inches(1.5), width=Inches(12.9))
+text(s, Inches(0.6), Inches(5.0), Inches(12.2), Inches(2.3), [
+    "Grid belief starts at ~10.3 nats (WAFR08, Audit, quasi-static); GenAIF starts at ~8.8 (learned model prior); "
+    "RSS20 particles start at ~4.6 (128-particle prior).",
+    "Audit's entropy falls but the belief is overconfident (truth outside the retained set C on most commits).",
+], size=15)
+
 # ---------------------------------------------------------------- limits
 s = title_only("What the test implementations show, and what they do not")
 text(s, Inches(0.6), Inches(1.3), Inches(12.2), Inches(5.9), [
@@ -294,7 +328,9 @@ text(s, Inches(0.6), Inches(1.3), Inches(12.2), Inches(5.9), [
     "  Physics identification stays coarse in every method (push forces mostly measure μ·m)",
     "  GenAIF: learned σ keeps the belief broad, so its belief-based stop rarely fires",
     "  Quasi-static: open-loop plans with unknown μ, m expand the belief (γ > 1); many re-localizations",
-    "  RSS20: one short DQN run (~1.7 h CPU), no hyper-parameter search",
+    "  RSS20: one short DQN run (~1.7 h CPU), no hyper-parameter search; 0 touches in 3/3 seeds, so whether "
+    "the policy uses the belief at all is untested (ablate with scrambled b̃)",
+    "  Yaw is the bottleneck: Audit seed0 (1.6 cm / 11°) and quasi-static seed2 (0.6 cm / 16°) fail on yaw alone",
     "Code: skrl/envs/cube_push/{wafr08,audit,genaif,quasistatic,rss20,render}.py, "
     "examples/contact_rich_uncertainty/{cube_push_belief,cube_push_rss20_train}.py",
     "Runs on zz-bw (planners) and dl (RSS20 training), CPU; videos in runs/cube_push_<method>/videos/",

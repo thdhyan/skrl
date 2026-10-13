@@ -191,8 +191,8 @@ class RSS20CubePlanner(WAFR08CubePlanner):
 class RSS20MacroEnv(gymnasium.Env):
     """Controller-level MDP of RSS20: observation [b̃, goal], action = controller index of the bank."""
 
-    def __init__(self, cfg: RSS20Cfg | None = None, seed: int = 0) -> None:
-        self.env = CubePushEnv()
+    def __init__(self, cfg: RSS20Cfg | None = None, seed: int = 0, env_cfg: CubePushCfg | None = None) -> None:
+        self.env = CubePushEnv(env_cfg or CubePushCfg())
         self.env.reset(seed=seed)  # seeds the env's generator; later resets continue it
         self.planner = RSS20CubePlanner(self.env.cfg, cfg, seed=seed)
         self.observation_space = gymnasium.spaces.Box(-np.inf, np.inf, (OBS_DIM,), np.float32)

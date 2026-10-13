@@ -14,6 +14,7 @@ import gymnasium
 from skrl.agents.torch.belief_dqn.models import ResNetDuelingQNetwork
 from skrl.agents.torch.ddqn import DDQN, DDQN_CFG
 from skrl.envs.cube_push.rss20 import RSS20MacroEnv
+from skrl.envs.cube_push.sim import CubePushCfg
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.trainers.torch import SequentialTrainer
@@ -24,13 +25,14 @@ parser.add_argument("--num-envs", type=int, default=48)
 parser.add_argument("--timesteps", type=int, default=1500, help="vector steps (num-envs transitions each)")
 parser.add_argument("--out", default="runs/cube_push_rss20")
 parser.add_argument("--seed", type=int, default=0)
+parser.add_argument("--pusher", choices=["gantry", "arm"], default="gantry")
 args = parser.parse_args()
 
 set_seed(args.seed)
 
 
 def make(i):
-    return lambda: RSS20MacroEnv(seed=1000 * args.seed + i)
+    return lambda: RSS20MacroEnv(seed=1000 * args.seed + i, env_cfg=CubePushCfg(pusher=args.pusher))
 
 
 if __name__ == "__main__":

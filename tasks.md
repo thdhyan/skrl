@@ -185,10 +185,35 @@ planner subclass that changes the belief, the model or the decision rule. One ru
   success signal (privileged, as in the paper), which the other methods do not get.
 - [x] Evals run on zz-bw (Audit, GenAIF, quasi-static) and dl (RSS20) after parallel local runs crashed the laptop.
 - [x] Deck `docs/belief_methods/build_cube_push_methods_slides.py` → Google Slides "Cube push: belief methods"
-  (https://docs.google.com/presentation/d/1DKeFUxc0kjjW7z2-JCN2PpO_0Iyt8pndxOFEUvYv95o/edit): summary table, env
+  (https://docs.google.com/presentation/d/16XQQpLzmtNFXuAkzWxDuDZx8S9-DxF-g_McJmiprX00/edit, 18 slides): summary table, env
   definitions (obs Box(10), action Box(3), reward, termination, hidden state), controller-level definitions, per
   method rule + seed-1 keyframes + embedded seed 0/1/2 videos (Drive folder 1KVtaCvJHo__JFWIpUJOHmmy6efQpm_dB),
-  distance comparison, limits; 12 videos embedded.
+  distance comparison, belief-entropy comparison (new: WAFR08 contracts to P(goal) > 0.8, GenAIF stuck ~7 nats),
+  limits incl. RSS20 0-touches caveat and yaw-only failures; 12 videos embedded.
+
+## 7j. Arm low level under IK: same tip, joints below the EE interface (2026-10-12)
+
+Hierarchical split: planners output end-effector (tip) targets (WRTs); a 3-joint arm (shoulder/elbow yaw + vertical
+rod slide, `CubePushCfg(pusher="arm")`, analytic IK + joint servos) realizes them. Action Box(3) and observation
+Box(10) are unchanged, so no planner, belief or decision code changed — only `sim.py` (arm MJCF, `arm_fk`/`arm_ik`,
+`sense`, `expand_controls`), `env.py` (`step` maps EE → IK → joint servo), `render.py` follow camera, `--pusher`
+on the runner and RSS20 training. IK is a pure function of the EE waypoints (fixed elbow branch), so env and
+hypotheses expand identical joint controls. Fixes along the way: hinge `range` is in degrees (elbow was welded at
+±2.95°); rollout thread pool keyed by model (mixed gantry+arm models segfaulted); tip site sensor reads contact
+only, Fz gravity bias subtracted. Tests `tests/envs/test_cube_push.py` 8/8 (5 gantry + 3 arm); isolated touch
+parity gantry vs arm [1, 0.0412] vs [1, 0.0408]; tracking 0.33 mm.
+
+- [x] WAFR08 seed 1 (same physics/goal as gantry): arm SUCCESS 0.5 cm / 4.3° in 40 WRTs (22 touch + 18 goal) vs
+  gantry 27 WRTs (21 + 6), 0.4 cm / 4.8°. Within tolerance from WRT #18, but P(goal) only 0.28 → 0.64 at the end
+  (gantry 0.83): the pushes work, the belief does not concentrate, the belief stop never fires. Video
+  `runs/cube_push_arm_wafr08/videos/wafr08_seed1.mp4`, frame checked (arm + belief panels render).
+- [ ] Suspected cause: 3-step settle is too short for the heavier arm — env starts each WRT with servo transients
+  while hypotheses start at perfect rest (isolated touches from rest match to 0.4 mm). Next: longer settle /
+  stiffer yaw servos / wider likelihoods in arm mode, then re-run.
+- [ ] Other methods: Audit/quasi-static reuse the same `predict`/`execute` (no code change); GenAIF's learned model
+  was trained on gantry traces and must be retrained (`dataset()` already routes through `expand_controls`/`sense`);
+  RSS20 eval works via `execute`, training takes `--pusher arm` (not run yet). Full arm sweep (5 methods × 3 seeds)
+  not run — one seed demonstrates the pattern.
 
 ## 8. CartPole physics extensions (answered below)
 

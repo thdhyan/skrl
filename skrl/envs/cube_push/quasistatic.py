@@ -23,7 +23,7 @@ import math
 import numpy as np
 
 from skrl.belief.grid_belief import entropy, expected_information_gain
-from skrl.envs.cube_push.sim import CubePushCfg, cube_pose, rollout, substep_controls
+from skrl.envs.cube_push.sim import CubePushCfg, cube_pose, expand_controls, rollout
 from skrl.envs.cube_push.wafr08 import WAFR08Cfg, WAFR08CubePlanner, WRT
 
 
@@ -113,11 +113,11 @@ class QuasiStaticCubePlanner(WAFR08CubePlanner):
             length = max(len(w.targets) for w in stage)
             for i, wrt in enumerate(stage):
                 padded = np.concatenate([wrt.targets, np.repeat(wrt.targets[-1:], length - len(wrt.targets), 0)])
-                controls.append(np.repeat(substep_controls(wrt.start, padded, e.substeps)[None], n, 0))
+                controls.append(np.repeat(expand_controls(e, wrt.start, padded, e.substeps)[None], n, 0))
                 init.append(self.sim.initial_states(wrt.start, poses[i * n : (i + 1) * n]))
             blocked = np.concatenate([self._blocked(wrt, poses[i * n : (i + 1) * n]) for i, wrt in enumerate(stage)])
             sd = rollout(models, np.concatenate(init), np.concatenate(controls))
-            new = cube_pose(sd[:, -1])
+            new = cube_pose(sd[:, -1], e)
             new[blocked] = poses[blocked]
             contact = np.linalg.norm(new[:, :2] - poses[:, :2], axis=1) > 1e-3
             off_table = np.any(np.abs(new[:, :2]) > np.asarray(e.table_half) - e.cube_half, axis=1)

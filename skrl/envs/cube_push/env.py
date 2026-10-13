@@ -1,11 +1,15 @@
 """Partially observable cube push in MuJoCo.
 
-The agent controls a cylindrical pusher (position targets in x, y, z) and is told only the wanted final cube pose.
+The agent commands a pusher tip (position targets in x, y, z) and is told only the wanted final cube pose.
 Hidden: the cube's initial pose (x, y, yaw) and its friction μ, mass m and damping k_d. It observes the pusher's
-encoders and actuator forces (noisy), so it has to find the cube by touch and infer its physics from the forces.
+encoders and contact forces (noisy), so it has to find the cube by touch and infer its physics from the forces.
 
-Observation ``[pusher xyz (3), pusher force xyz (3), goal (x, y, cos 4ψ, sin 4ψ)]``: the goal yaw ψ appears as
-``4ψ`` because the cube looks the same every 90°. Action: the pusher position target, clipped to ``max_speed``.
+With the default gantry the tip rides on x, y, z slides; with ``CubePushCfg(pusher="arm")`` the same tip is
+carried by a 3-joint arm (shoulder/elbow yaw + vertical slide) under analytic IK — the hierarchical split: the
+high level only ever sees end-effector targets, joint control stays in the low level.
+
+Observation ``[tip xyz (3), tip force xyz (3), goal (x, y, cos 4ψ, sin 4ψ)]``: the goal yaw ψ appears as
+``4ψ`` because the cube looks the same every 90°. Action: the tip position target, clipped to ``max_speed``.
 ``info`` carries the true cube pose and physics for evaluation and debug rendering only.
 """
 from __future__ import annotations
@@ -18,12 +22,13 @@ import mujoco
 import numpy as np
 
 from skrl.envs.cube_push.sim import (
-    FORCE,
-    PUSHER,
     CubePushCfg,
     CubePushModel,
+    N_JOINTS,
     cube_pose,
+    ik,
     mjcf,
+    sense,
     substep_controls,
     wrap_yaw,
 )
@@ -54,6 +59,7 @@ class CubePushEnv(gymnasium.Env):
         self.goal = np.zeros(3)
         self.physics = np.zeros(3)
         self.target = np.zeros(3)
+        self.joint_target = np.zeros(3)  # arm mode: previous joint-space target (EE targets map through arm_ik)
 
     # --- gymnasium API --------------------------------------------------------------------------------------------
 
@@ -74,18 +80,27 @@ class CubePushEnv(gymnasium.Env):
         self.sim.set_physics(self.model, *self.physics)
         self.target = np.array([*cfg.pusher_start, cfg.z_high])
         self.sim.set_state(self.data, self.target, pose)
+        self.joint_target = np.asarray(ik(cfg, self.target), dtype=np.float64).ravel()
         mujoco.mj_forward(self.model, self.data)
         self.steps = 0
         return self._observation(), self._info()
 
     def step(self, action):
         cfg = self.cfg
+        n = N_JOINTS[cfg.pusher]
         limit = cfg.max_speed * cfg.control_dt
         target = np.clip(np.asarray(action, float), self.action_space.low, self.action_space.high)
         target = self.target + np.clip(target - self.target, -limit, limit)
-        for ctrl in substep_controls(self.target, target[None], cfg.substeps):
-            self.data.ctrl[:3] = ctrl
-            mujoco.mj_step(self.model, self.data)
+        if cfg.pusher == "gantry":
+            for ctrl in substep_controls(self.target, target[None], cfg.substeps):
+                self.data.ctrl[:n] = ctrl
+                mujoco.mj_step(self.model, self.data)
+        else:
+            joint = np.asarray(ik(cfg, target), dtype=np.float64).ravel()
+            for ctrl in substep_controls(self.joint_target, joint[None], cfg.substeps):
+                self.data.ctrl[:n] = ctrl
+                mujoco.mj_step(self.model, self.data)
+            self.joint_target = joint
         self.target = target
         self.steps += 1
         pose = self.cube_pose()
@@ -111,15 +126,15 @@ class CubePushEnv(gymnasium.Env):
     # --- helpers --------------------------------------------------------------------------------------------------
 
     def cube_pose(self) -> np.ndarray:
-        return cube_pose(self.data.sensordata)
+        return cube_pose(self.data.sensordata, self.cfg)
 
     def _observation(self) -> np.ndarray:
         rng, cfg = self.np_random, self.cfg
-        s = self.data.sensordata
-        pusher = s[PUSHER] + rng.normal(0.0, cfg.position_noise, 3)
-        force = s[FORCE] + rng.normal(0.0, cfg.force_noise, 3)
+        tip, force = sense(cfg, self.data.sensordata)
+        tip = tip + rng.normal(0.0, cfg.position_noise, 3)
+        force = force + rng.normal(0.0, cfg.force_noise, 3)
         g = self.goal
-        return np.concatenate([pusher, force, [g[0], g[1], math.cos(4 * g[2]), math.sin(4 * g[2])]]).astype(np.float32)
+        return np.concatenate([tip, force, [g[0], g[1], math.cos(4 * g[2]), math.sin(4 * g[2])]]).astype(np.float32)
 
     def _info(self) -> dict[str, Any]:
         return {"cube_pose": self.cube_pose(), "physics": self.physics.copy(), "goal": self.goal.copy()}

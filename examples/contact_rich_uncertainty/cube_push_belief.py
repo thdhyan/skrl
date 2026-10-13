@@ -23,19 +23,23 @@ import numpy as np
 
 from skrl.envs.cube_push import CubePushEnv, pose_error
 from skrl.envs.cube_push.render import BeliefVideo
+from skrl.envs.cube_push.sim import CubePushCfg
 from skrl.envs.cube_push.wafr08 import WAFR08CubePlanner
 
 METHODS = {"wafr08": "WAFR08", "audit": "Audit", "genaif": "GenAIF", "quasistatic": "Quasi-static", "rss20": "RSS20"}
 parser = argparse.ArgumentParser()
 parser.add_argument("--method", choices=list(METHODS), default="wafr08")
 parser.add_argument("--seed", type=int, default=1)
-parser.add_argument("--out", default=None, help="default runs/cube_push_<method>")
+parser.add_argument("--pusher", choices=["gantry", "arm", "polar", "artic"], default="gantry",
+                    help="low level: gantry slides, SCARA arm, cylindrical arm or articulated arm under IK "
+                    "(same EE interface)")
+parser.add_argument("--out", default=None, help="default runs/cube_push[_arm]_<method>")
 parser.add_argument("--policy", default="runs/cube_push_rss20/ddqn/checkpoints/best_agent.pt", help="rss20 only")
 parser.add_argument("--no-video", action="store_true")
 args = parser.parse_args()
-args.out = args.out or f"runs/cube_push_{args.method}"
+args.out = args.out or f"runs/cube_push_{'arm_' if args.pusher == 'arm' else ''}{args.method}"
 
-env = CubePushEnv()
+env = CubePushEnv(CubePushCfg(pusher=args.pusher))
 _, info = env.reset(seed=args.seed)
 if args.method == "audit":
     from skrl.envs.cube_push.audit import AuditCubePlanner
@@ -126,7 +130,7 @@ for i in range(max_steps):
 
 dist, dyaw = pose_error(env.cube_pose(), planner.goal)
 result = {
-    "method": args.method, "seed": args.seed, "wrts": len(log), "sim_time_s": env.steps * env.cfg.control_dt, "wall_s": time.time() - t0,
+    "method": args.method, "pusher": args.pusher, "seed": args.seed, "wrts": len(log), "sim_time_s": env.steps * env.cfg.control_dt, "wall_s": time.time() - t0,
     "success": bool(dist < tol_p and dyaw < tol_y), "goal_dist_cm": 100 * float(dist),
     "goal_dyaw_deg": math.degrees(float(dyaw)), "stopped": state["reason"], "physics": env.physics.tolist(),
     "goal": planner.goal.tolist(), "final_pose": env.cube_pose().tolist(), "log": log,
