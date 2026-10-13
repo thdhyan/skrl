@@ -37,7 +37,8 @@ parser.add_argument("--out", default=None, help="default runs/cube_push[_arm]_<m
 parser.add_argument("--policy", default="runs/cube_push_rss20/ddqn/checkpoints/best_agent.pt", help="rss20 only")
 parser.add_argument("--no-video", action="store_true")
 args = parser.parse_args()
-args.out = args.out or f"runs/cube_push_{'arm_' if args.pusher == 'arm' else ''}{args.method}"
+args.out = args.out or (f"runs/cube_push_{args.method}" if args.pusher == "gantry"
+                        else f"runs/cube_push_{args.pusher}_{args.method}")
 
 env = CubePushEnv(CubePushCfg(pusher=args.pusher))
 _, info = env.reset(seed=args.seed)
